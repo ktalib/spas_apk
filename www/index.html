@@ -97,10 +97,11 @@
 
       <!-- ---- Tab: Field Map ---- -->
       <main id="page-map" class="page hidden">
-        <div class="notice">
-          Satellite tiles need a connection. Plotted points are listed here and
-          work offline; tap one to copy its coordinates.
-        </div>
+        <!-- Leaflet loads from the network on demand; offline this stays
+             hidden and the list below carries the same information. -->
+        <div id="map-canvas" class="map hidden"></div>
+        <div id="map-notice" class="notice">Loading map…</div>
+
         <h3 class="section-title">Plotted <span id="count-plotted" class="pill">0</span></h3>
         <div id="list-map" class="list"></div>
 
@@ -116,7 +117,12 @@
     <div id="sheet-add-record" class="sheet hidden">
       <div class="sheet__panel">
         <div class="sheet__head">
-          <h2>Add Land Record</h2>
+          <!--
+            Title is set at runtime. Opened from an indexed file it reads
+            "Log Inspection", because that land record already exists and the
+            surveyor is inspecting it, not creating it.
+          -->
+          <h2 id="ar-title">Add Land Record</h2>
           <button class="sheet__close" data-close>&times;</button>
         </div>
 
@@ -180,54 +186,48 @@
 
           <div id="ar-contravention" class="badge badge--danger hidden">Contravention</div>
 
-          <p id="ar-error" class="error hidden"></p>
-        </div>
-
-        <div class="sheet__foot">
-          <button id="ar-save" class="btn btn--primary btn--lg">Save record</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ================= SHEET: Log Field Inspection ================= -->
-    <div id="sheet-log-inspect" class="sheet hidden">
-      <div class="sheet__panel">
-        <div class="sheet__head">
-          <h2>Log Field Inspection</h2>
-          <button class="sheet__close" data-close>&times;</button>
-        </div>
-
-        <div class="sheet__body">
           <label class="field">
-            <span>Linked application <i>*</i></span>
-            <select id="li-application"></select>
+            <span>Property photos</span>
+            <input id="ar-photos" type="file" accept="image/*" capture="environment" multiple />
           </label>
+          <div id="ar-photo-list" class="thumbs"></div>
+
+          <!--
+            Field inspection, inline.
+            The surveyor is standing on the plot when they add the record, so
+            the inspection belongs on the same screen — not behind a second
+            button on another tab. Leaving it blank simply records no inspection.
+          -->
+          <div class="section">
+            <h3>Field inspection</h3>
+            <p class="hint">On site now? Fill this in with the record. Otherwise leave it blank.</p>
+          </div>
 
           <label class="field">
-            <span>Inspection date <i>*</i></span>
-            <input id="li-date" type="date" />
+            <span>Inspection date</span>
+            <input id="ar-insp-date" type="date" />
           </label>
 
           <label class="field">
             <span>Coordinates</span>
             <div class="row">
-              <input id="li-coords" type="text" inputmode="decimal" placeholder="latitude, longitude" />
-              <button id="li-gps" class="btn btn--sm">GPS</button>
+              <input id="ar-coords" type="text" inputmode="decimal" placeholder="latitude, longitude" />
+              <button id="ar-gps" class="btn btn--sm" type="button">GPS</button>
             </div>
           </label>
-          <p id="li-coord-note" class="hint"></p>
+          <p id="ar-coord-note" class="hint"></p>
 
           <label class="field">
-            <span>Findings <i>*</i></span>
-            <textarea id="li-findings" rows="4"></textarea>
+            <span>Findings</span>
+            <textarea id="ar-findings" rows="3" placeholder="Describe findings on ground..."></textarea>
           </label>
 
-          <p id="li-error" class="error hidden"></p>
-          <p id="li-warn" class="warn hidden"></p>
+          <p id="ar-error" class="error hidden"></p>
+          <p id="ar-warn" class="warn hidden"></p>
         </div>
 
         <div class="sheet__foot">
-          <button id="li-save" class="btn btn--primary btn--lg">Save inspection</button>
+          <button id="ar-save" class="btn btn--primary btn--lg">Save record</button>
         </div>
       </div>
     </div>

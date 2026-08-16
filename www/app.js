@@ -12,9 +12,10 @@ import * as api from './api.js';
 import * as store from './store.js';
 import * as sync from './sync.js';
 import {
-  validateLandRecord, validateFieldData, warnFieldData,
+  validateLandRecord, validateFieldData,
   parseCoordinates, hasErrors, firstError
 } from './validate.js';
+import { resolveLandUse, resolveOwner } from './landuse.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = {};
@@ -87,13 +88,17 @@ async function doLogin() {
   try {
     await api.login(identifier, password, `spas-${getPlatform()}`);
 
-    toast('Signed in. Downloading reference data...', 'success');
-
-    // First run needs the lookups before the form is usable offline.
-    await sync.refreshLookups({});
-    await sync.syncNow({});
-
+    // Once a token exists, the surveyor is in. Reference data is downloaded
+    // AFTER this point and never blocks entry.
+    //
+    // It used to be awaited here, which meant a slow file-index pull on a 2G
+    // connection failed the whole sign-in — with the token already issued and
+    // saved. The surveyor saw "timed out" and could not get in, despite being
+    // authenticated. Getting in matters more than having every lookup cached.
     await enterApp();
+
+    toast('Signed in. Downloading reference data...', 'success');
+    primeReferenceData();
   } catch (error) {
     let message = error.message;
 
@@ -140,6 +145,25 @@ async function handleAuthExpired() {
   show('login');
 }
 
+/**
+ * Download reference data in the background, after the surveyor is already in.
+ *
+ * Deliberately not awaited by the caller and never fatal: a failure here costs
+ * cached lookups, which "Sync now" can retry, not access to the app.
+ */
+function primeReferenceData() {
+  sync.refreshLookups({})
+    .then(() => sync.syncNow({}))
+    .then(() => renderAll())
+    .then(() => toast('Reference data ready.', 'success'))
+    .catch((error) => {
+      toast(
+        `Signed in, but reference data did not download: ${error.message} — tap "Sync now" when you have a better connection.`,
+        'warn'
+      );
+    });
+}
+
 async function doLogout() {
   const pending = await store.pendingCount();
 
@@ -170,52 +194,94 @@ function contravenes(row) {
   return a && b && a !== b;
 }
 
+const STATUS_LABEL = {
+  open: 'Open',
+  in_progress: 'In Progress',
+  approved: 'Approved',
+  certificate_issued: 'Cert. Issued',
+  closed: 'Closed',
+  not_added: 'Not Added'
+};
+
 async function renderRecords() {
   const search = el.searchRecords.value.trim();
-  const [list, stats] = await Promise.all([store.listRecords({ search }), store.recordStats()]);
+
+  // The indexed-file universe, not just what this device has captured —
+  // matching the web page. A surveyor arrives knowing the file number and needs
+  // to find it whether or not it has been inspected.
+  const [list, stats, cached] = await Promise.all([
+    store.listIndexedFiles({ search }),
+    store.recordStats(),
+    store.countFileIndex()
+  ]);
 
   el.statTotal.textContent = stats.total;
   el.statOpen.textContent = stats.open;
   el.statProgress.textContent = stats.in_progress;
   el.statPending.textContent = stats.pending;
 
-  el.listRecords.innerHTML = list.length ? list.map((r) => `
-    <article class="card">
-      <div class="card__top">
-        <strong>${esc(r.file_number || 'Pending file number')}</strong>
-        ${syncBadge(r)}
-      </div>
-      <div class="card__owner">${esc(r.owner_name || '—')}</div>
-      <div class="card__meta">${esc(r.location || r.lga || '—')}</div>
-      <div class="card__uses">
-        <span class="chip">${esc(r.proposed_use || '—')}</span>
-        <span class="chip">${esc(r.existing_use || '—')}</span>
-        ${contravenes(r) ? '<span class="chip chip--danger">Contravention</span>' : ''}
-      </div>
-    </article>
-  `).join('') : '<p class="empty">No records yet. Tap “Add Land Record”.</p>';
+  if (!list.length) {
+    el.listRecords.innerHTML = cached
+      ? '<p class="empty">No file matches that search.</p>'
+      : '<p class="empty">No indexed files cached yet. Tap “Sync now” while online.</p>';
+    return;
+  }
+
+  el.listRecords.innerHTML = list.map((r) => {
+    const status = r.status_raw;
+
+    // The action button only appears on files nobody has inspected yet — the
+    // one row a surveyor can actually act on.
+    const action = status === 'not_added'
+      ? `<button class="rec-add" data-fileno="${esc(r.file_number)}" title="Log inspection">+</button>`
+      : '';
+
+    return `
+      <article class="rec">
+        <header class="rec__head">
+          <span class="rec__no">${esc(r.file_number || '—')}</span>
+          <span class="rec__right">
+            ${action}
+            ${r.client_uuid && r.sync_status === 'pending' ? '<span class="chip chip--warn">Pending</span>' : ''}
+            <span class="rec__status is-${esc(status)}">${STATUS_LABEL[status] || status}</span>
+          </span>
+        </header>
+        <div class="rec__body">
+          <div class="rec__row"><span>Owner</span><b>${esc(resolveOwner(r) || '—')}</b></div>
+          <div class="rec__row"><span>Location</span><b>${esc(r.location || r.lga || '—')}</b></div>
+          <div class="rec__row"><span>Land use</span><b>${esc(resolveLandUse(r) || '—')}</b></div>
+          ${contravenes(r) ? '<div class="rec__row"><span>Status</span><b class="is-danger">Contravention</b></div>' : ''}
+        </div>
+      </article>`;
+  }).join('');
 }
 
+/**
+ * Field Records: the records that have actually been added.
+ *
+ * Read-only. Inspections are captured on the record itself now, so there is
+ * nothing to create from this tab — it is the register of what has been done,
+ * not a second place to do it.
+ */
 async function renderVerify() {
   const search = el.searchVerify.value.trim();
-  const list = await store.listFieldData({ search });
+  const list = await store.listRecords({ search });
 
-  el.listVerify.innerHTML = list.length ? list.map((f) => `
-    <article class="card">
-      <div class="card__top">
-        <strong>${esc(f.file_number || '—')}</strong>
-        ${syncBadge(f)}
+  el.listVerify.innerHTML = list.length ? list.map((r) => `
+    <article class="rec">
+      <header class="rec__head">
+        <span class="rec__no">${esc(r.file_number || 'Pending file number')}</span>
+        <span class="rec__right">${syncBadge(r)}</span>
+      </header>
+      <div class="rec__body">
+        <div class="rec__row"><span>Owner</span><b>${esc(resolveOwner(r) || '—')}</b></div>
+        <div class="rec__row"><span>Location</span><b>${esc(r.location || r.lga || '—')}</b></div>
+        <div class="rec__row"><span>Approved</span><b>${esc(r.proposed_use || '—')}</b></div>
+        <div class="rec__row"><span>Prevailing</span><b>${esc(r.existing_use || '—')}</b></div>
+        ${contravenes(r) ? '<div class="rec__row"><span>Status</span><b class="is-danger">Contravention</b></div>' : ''}
       </div>
-      <div class="card__owner">${esc(f.owner_name || '—')}</div>
-      <div class="card__meta">${esc(f.inspection_date || '—')}</div>
-      <div class="card__uses">
-        <span class="chip chip--ok">Inspected</span>
-        ${f.coordinates ? '' : '<span class="chip chip--warn">No pin</span>'}
-        ${contravenes(f) ? '<span class="chip chip--danger">Contravention</span>' : ''}
-      </div>
-      <p class="card__findings">${esc((f.findings || '').slice(0, 120))}</p>
     </article>
-  `).join('') : '<p class="empty">No inspections recorded yet.</p>';
+  `).join('') : '<p class="empty">No records added yet. Add one from the Records tab.</p>';
 }
 
 async function renderMap() {
@@ -223,6 +289,8 @@ async function renderMap() {
 
   el.countPlotted.textContent = plotted.length;
   el.countAwaiting.textContent = awaiting.length;
+
+  renderMapCanvas(plotted).catch(() => {});
 
   el.listMap.innerHTML = plotted.length ? plotted.map((f) => `
     <article class="card card--tight">
@@ -262,6 +330,47 @@ async function refreshSyncBar() {
   el.syncText.textContent = bits.join(' · ');
 }
 
+/**
+ * Show what the conflict counter is actually counting.
+ *
+ * A 409 or 422 is terminal — retrying never clears it — so without somewhere to
+ * read the reason, "1 conflict" sits in the status bar forever with no way to
+ * find out why or to clear it.
+ */
+async function showConflicts() {
+  const conflicts = await store.listConflicts();
+
+  if (!conflicts.length) return;
+
+  const lines = conflicts.map((c) => {
+    const payload = (() => {
+      try {
+        return JSON.parse(c.payload_json);
+      } catch {
+        return {};
+      }
+    })();
+
+    const who = payload.file_number || payload.owner_name || c.entity_client_uuid.slice(0, 8);
+    return `• ${who}\n  ${String(c.last_error || '').replace(/^CONFLICT:/, '')}`;
+  });
+
+  const discard = confirm(
+    `${conflicts.length} record(s) the server refused:\n\n${lines.join('\n\n')}\n\n` +
+    `Retrying will not help. Discard them from the queue?\n\n` +
+    `(The records stay on this device — only the queued upload is dropped.)`
+  );
+
+  if (!discard) return;
+
+  for (const c of conflicts) {
+    await store.deleteOutboxEntry(c.id);
+  }
+
+  toast('Queue cleared. The records remain on the device.', 'success');
+  await renderAll();
+}
+
 // ---------------------------------------------------------------------------
 // Add Land Record
 // ---------------------------------------------------------------------------
@@ -271,7 +380,57 @@ function fillSelect(select, values, { placeholder = '— select —' } = {}) {
     + values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
 }
 
-async function openAddRecord() {
+/**
+ * Select an option by loose match.
+ *
+ * The land-use list is stored upper-case ("AGRICULTURAL") while the prefix
+ * mapping yields title case ("Agriculture"), and the two differ in more than
+ * case — so an exact assignment silently leaves the select empty. Compare on a
+ * common stem instead.
+ */
+function selectByLabel(select, wanted) {
+  const stem = String(wanted).toUpperCase().slice(0, 5);
+
+  const match = Array.from(select.options)
+    .find((o) => o.value && o.value.toUpperCase().startsWith(stem));
+
+  if (match) select.value = match.value;
+}
+
+/**
+ * Open the capture sheet for an indexed file that already exists.
+ *
+ * Retitled "Log Inspection" on purpose: the land record is already in the
+ * index, so the surveyor is recording an inspection of it, not creating land.
+ * Calling that "Add Land Record" invited the reading that a second record was
+ * being made for a file that already had one.
+ */
+async function openForIndexedFile(fileNumber) {
+  await openAddRecord({ title: 'Log Inspection' });
+
+  const file = await store.findIndexedFile(fileNumber);
+
+  // Statutory: the file exists, so its details are fixed and inherited.
+  // Awaited — it rebuilds the land-use options this function then sets.
+  await setTitleType('statutory');
+  el.arFileSearch.value = fileNumber;
+  el.arFileResults.classList.add('hidden');
+
+  if (file) {
+    state.selectedFile = file;
+    el.arOwner.value = resolveOwner(file) || '';
+    el.arPhone.value = file.phone || '';
+    el.arLocation.value = file.location || '';
+
+    // Falls back to the file-number prefix when the index has no land use.
+    const use = resolveLandUse(file);
+    if (use) selectByLabel(el.arLandUse, use);
+  }
+}
+
+async function openAddRecord({ title = 'Add Land Record' } = {}) {
+  el.arTitle.textContent = title;
+
   state.titleType = 'statutory';
   state.selectedFile = null;
 
@@ -281,8 +440,20 @@ async function openAddRecord() {
   el.grpStatutory.classList.remove('hidden');
   el.grpCustomary.classList.add('hidden');
 
-  ['arFileSearch', 'arOwner', 'arPhone', 'arLocation'].forEach((k) => { el[k].value = ''; });
+  ['arFileSearch', 'arOwner', 'arPhone', 'arLocation', 'arCoords', 'arFindings'].forEach((k) => {
+    el[k].value = '';
+  });
+
+  state.photos = [];
+  el.arPhotos.value = '';
+  el.arPhotoList.innerHTML = '';
+  el.arInspDate.value = new Date().toISOString().slice(0, 10);
+  el.arCoordNote.textContent = isNative()
+    ? 'Tap GPS while standing on the plot — it needs no connection.'
+    : 'GPS needs the installed app.';
+
   el.arError.classList.add('hidden');
+  el.arWarn.classList.add('hidden');
   el.arContravention.classList.add('hidden');
   el.arFileResults.classList.add('hidden');
 
@@ -304,7 +475,12 @@ async function openAddRecord() {
   el.sheetAdd.classList.remove('hidden');
 }
 
-function setTitleType(type) {
+/**
+ * Async on purpose. It repopulates the land-use dropdown, so a caller that
+ * pre-fills a value immediately after would have it wiped when the rebuild
+ * lands. Callers that set a value must await this first.
+ */
+async function setTitleType(type) {
   state.titleType = type;
 
   document.querySelectorAll('[data-title-type]').forEach((b) =>
@@ -314,8 +490,8 @@ function setTitleType(type) {
   el.grpCustomary.classList.toggle('hidden', type !== 'customary');
 
   // Customary land is only held for three uses — Industrial is excluded.
-  store.listLandUses({ customaryOnly: type === 'customary' })
-    .then((uses) => fillSelect(el.arLandUse, uses));
+  const uses = await store.listLandUses({ customaryOnly: type === 'customary' });
+  fillSelect(el.arLandUse, uses);
 }
 
 async function searchFiles() {
@@ -372,6 +548,30 @@ function updateContravention() {
   el.arContravention.classList.toggle('hidden', !(a && b && a !== b));
 }
 
+/**
+ * Read the picked images as data URLs.
+ *
+ * A plain file input with `capture="environment"` opens the camera inside a
+ * Capacitor WebView, which avoids pulling in the Camera plugin and the extra
+ * permissions it needs. Images are held as data URLs in SQLite so they survive
+ * offline, and are uploaded on sync.
+ */
+async function readPhotos(input) {
+  const files = Array.from(input.files || []);
+
+  return Promise.all(files.map((file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.onload = () => resolve({ name: file.name, data: reader.result });
+    reader.readAsDataURL(file);
+  })));
+}
+
+function renderThumbs(photos) {
+  el.arPhotoList.innerHTML = photos
+    .map((p) => `<img class="thumb" src="${p.data}" alt="">`).join('');
+}
+
 async function saveLandRecord() {
   const data = {
     land_title_type: state.titleType,
@@ -404,12 +604,61 @@ async function saveLandRecord() {
     return;
   }
 
+  // The inline inspection. Filling in any of it means an inspection is being
+  // recorded alongside the record; leaving it all blank records none.
+  const rawCoords = el.arCoords.value.trim();
+  const findings = el.arFindings.value.trim();
+  const inspDate = el.arInspDate.value;
+  const wantsInspection = !!(findings || rawCoords || inspDate);
+
+  if (wantsInspection) {
+    const inspErrors = validateFieldData({
+      inspection_date: inspDate || new Date().toISOString().slice(0, 10),
+      findings,
+      coordinates: rawCoords
+    });
+
+    if (hasErrors(inspErrors)) {
+      el.arError.textContent = firstError(inspErrors);
+      el.arError.classList.remove('hidden');
+      return;
+    }
+
+    // Missing pin warns once, then saves — losing the record entirely would be
+    // worse than losing the location (Q5).
+    if (!rawCoords && el.arWarn.classList.contains('hidden')) {
+      el.arWarn.textContent =
+        'No location pin. You are on the plot now — tap GPS if you can. Tap “Save record” again to save without it.';
+      el.arWarn.classList.remove('hidden');
+      return;
+    }
+  }
+
   el.arSave.disabled = true;
 
   try {
-    await store.createLandRecord(data, { createdBy: state.user?.name });
+    const photos = state.photos || [];
+    const clientUuid = await store.createLandRecord({ ...data, photos }, { createdBy: state.user?.name });
+
+    if (wantsInspection) {
+      await store.createFieldData({
+        spa_application_client_uuid: clientUuid,
+        file_number: data.file_number,
+        inspection_date: inspDate || new Date().toISOString().slice(0, 10),
+        findings: findings || 'Inspected on site.',
+        coordinates: parseCoordinates(rawCoords),
+        photos
+      }, { createdBy: state.user?.name, surveyorId: state.user?.id });
+    }
+
     el.sheetAdd.classList.add('hidden');
-    toast('Saved on device. It will sync when you have signal.', 'success');
+    toast(
+      wantsInspection
+        ? 'Record and inspection saved on device.'
+        : 'Saved on device. It will sync when you have signal.',
+      'success'
+    );
+
     await renderAll();
     sync.syncNow({});
   } catch (error) {
@@ -420,32 +669,14 @@ async function saveLandRecord() {
 }
 
 // ---------------------------------------------------------------------------
-// Log Field Inspection
+// GPS
 // ---------------------------------------------------------------------------
-
-async function openLogInspection() {
-  const apps = await store.selectableApplications();
-
-  el.liApplication.innerHTML = '<option value="">— select —</option>'
-    + apps.map((a) => `<option value="${esc(a.client_uuid)}">${esc(a.file_number || 'Pending')} — ${esc(a.owner_name || '')}</option>`).join('');
-
-  el.liDate.value = new Date().toISOString().slice(0, 10);
-  el.liCoords.value = '';
-  el.liFindings.value = '';
-  el.liError.classList.add('hidden');
-  el.liWarn.classList.add('hidden');
-  el.liCoordNote.textContent = isNative()
-    ? 'Tap GPS while standing on the plot — it needs no connection.'
-    : 'GPS needs the installed app.';
-
-  el.sheetLog.classList.remove('hidden');
-}
 
 async function captureGps() {
   const plugin = window.Capacitor?.Plugins?.Geolocation;
 
-  el.liGps.disabled = true;
-  el.liGps.textContent = '...';
+  el.arGps.disabled = true;
+  el.arGps.textContent = '...';
 
   try {
     if (!plugin) throw new Error('Geolocation needs the installed app.');
@@ -467,70 +698,108 @@ async function captureGps() {
     const position = await plugin.getCurrentPosition({ enableHighAccuracy: true, timeout: 20000 });
     const { latitude, longitude, accuracy } = position.coords;
 
-    el.liCoords.value = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
-    el.liCoordNote.textContent = `Accurate to about ${Math.round(accuracy)} m.`;
+    el.arCoords.value = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+    el.arCoordNote.textContent = `Accurate to about ${Math.round(accuracy)} m.`;
+    el.arWarn.classList.add('hidden');
   } catch (error) {
-    el.liCoordNote.textContent = `GPS failed: ${error.message}. You can type coordinates or save without a pin.`;
+    el.arCoordNote.textContent = `GPS failed: ${error.message} You can type coordinates, or save without a pin.`;
   } finally {
-    el.liGps.disabled = false;
-    el.liGps.textContent = 'GPS';
+    el.arGps.disabled = false;
+    el.arGps.textContent = 'GPS';
   }
 }
 
-async function saveInspection() {
-  const parentUuid = el.liApplication.value;
-  const coords = parseCoordinates(el.liCoords.value.trim());
+// ---------------------------------------------------------------------------
+// Field map
+// ---------------------------------------------------------------------------
 
-  const data = {
-    spa_application_client_uuid: parentUuid || null,
-    inspection_date: el.liDate.value,
-    findings: el.liFindings.value.trim(),
-    coordinates: coords
-  };
+let leafletPromise = null;
+let mapInstance = null;
 
-  if (!parentUuid) {
-    el.liError.textContent = 'Choose the application this inspection belongs to.';
-    el.liError.classList.remove('hidden');
+/**
+ * Load Leaflet on demand from the network.
+ *
+ * Not vendored, so the map is online-only — matching the web page, which loads
+ * it the same way, and accepting that satellite tiles need a connection
+ * regardless. Offline this rejects and the list below carries the same
+ * information, which is why capture never depends on the map: GPS does that.
+ */
+function loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+
+  if (!leafletPromise) {
+    leafletPromise = new Promise((resolve, reject) => {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(css);
+
+      const script = document.createElement('script');
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.onload = () => resolve(window.L);
+      script.onerror = () => {
+        leafletPromise = null;             // let a later attempt retry
+        reject(new Error('Leaflet could not be downloaded.'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  return leafletPromise;
+}
+
+async function renderMapCanvas(points) {
+  if (!points.length) {
+    el.mapNotice.textContent = 'No plotted points yet.';
+    el.mapNotice.classList.remove('hidden');
+    el.mapCanvas.classList.add('hidden');
     return;
   }
 
-  const errors = validateFieldData({ ...data, coordinates: el.liCoords.value.trim() });
-
-  if (hasErrors(errors)) {
-    el.liError.textContent = firstError(errors);
-    el.liError.classList.remove('hidden');
+  if (!(await sync.isOnline())) {
+    el.mapNotice.textContent = 'Offline — satellite tiles need a connection. Points are listed below.';
+    el.mapNotice.classList.remove('hidden');
+    el.mapCanvas.classList.add('hidden');
     return;
   }
-
-  // A missing pin warns once, then saves. Losing the record entirely would be
-  // worse than losing the location (product decision Q5).
-  const warnings = warnFieldData({ coordinates: el.liCoords.value.trim() });
-
-  if (warnings.length && el.liWarn.classList.contains('hidden')) {
-    el.liWarn.textContent = `${warnings[0]} Tap “Save inspection” again to save without it.`;
-    el.liWarn.classList.remove('hidden');
-    return;
-  }
-
-  const [parent] = (await store.listRecords({ limit: 500 })).filter((r) => r.client_uuid === parentUuid);
-
-  el.liSave.disabled = true;
 
   try {
-    await store.createFieldData({
-      ...data,
-      spa_application_id: parent?.server_id ?? null,
-      file_number: parent?.file_number ?? null
-    }, { createdBy: state.user?.name, surveyorId: state.user?.id });
+    const L = await loadLeaflet();
 
-    el.sheetLog.classList.add('hidden');
-    toast('Inspection saved on device.', 'success');
-    await renderAll();
-    sync.syncNow({});
+    el.mapCanvas.classList.remove('hidden');
+    el.mapNotice.classList.add('hidden');
+
+    if (!mapInstance) {
+      mapInstance = L.map(el.mapCanvas).setView([11.9964, 8.5919], 11);   // Kano
+
+      L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        { maxZoom: 19, attribution: 'Esri' }
+      ).addTo(mapInstance);
+    }
+
+    // Redraw markers from scratch — the set is small and this avoids tracking
+    // which pins changed between syncs.
+    (mapInstance._spasMarkers || []).forEach((m) => mapInstance.removeLayer(m));
+    mapInstance._spasMarkers = points.map((f) =>
+      L.marker([Number(f.coordinates.lat), Number(f.coordinates.lng)])
+        .addTo(mapInstance)
+        .bindPopup(
+          `<b>${esc(f.file_number || '—')}</b><br>${esc(resolveOwner(f) || '—')}`
+          + `<br>${esc(resolveLandUse(f) || '')}`
+        ));
+
+    mapInstance.fitBounds(
+      L.latLngBounds(points.map((f) => [Number(f.coordinates.lat), Number(f.coordinates.lng)])),
+      { padding: [40, 40], maxZoom: 16 }
+    );
+
+    // Leaflet mis-measures a container that was display:none when created.
+    setTimeout(() => mapInstance.invalidateSize(), 60);
   } catch (error) {
-    fatal('Save failed', error);
-  } finally {
-    el.liSave.disabled = false;
+    el.mapNotice.textContent = `Map unavailable: ${error.message} Points are listed below.`;
+    el.mapNotice.classList.remove('hidden');
+    el.mapCanvas.classList.add('hidden');
   }
 }
 
@@ -551,17 +820,20 @@ function cacheElements() {
     searchVerify: $('#search-verify'), listVerify: $('#list-verify'),
     listMap: $('#list-map'), listAwaiting: $('#list-awaiting'),
     countPlotted: $('#count-plotted'), countAwaiting: $('#count-awaiting'),
+    mapCanvas: $('#map-canvas'), mapNotice: $('#map-notice'),
     fab: $('#fab'),
-    sheetAdd: $('#sheet-add-record'), sheetLog: $('#sheet-log-inspect'),
+    sheetAdd: $('#sheet-add-record'),
+    arTitle: $('#ar-title'),
     grpStatutory: $('#grp-statutory'), grpCustomary: $('#grp-customary'),
     arFileSearch: $('#ar-file-search'), arFileResults: $('#ar-file-results'),
     arFileHint: $('#ar-file-hint'), arOwner: $('#ar-owner'), arPhone: $('#ar-phone'),
     arLga: $('#ar-lga'), arDistrict: $('#ar-district'), arLocation: $('#ar-location'),
     arLandUse: $('#ar-land-use'), arProposed: $('#ar-proposed'), arExisting: $('#ar-existing'),
-    arContravention: $('#ar-contravention'), arError: $('#ar-error'), arSave: $('#ar-save'),
-    liApplication: $('#li-application'), liDate: $('#li-date'), liCoords: $('#li-coords'),
-    liGps: $('#li-gps'), liCoordNote: $('#li-coord-note'), liFindings: $('#li-findings'),
-    liError: $('#li-error'), liWarn: $('#li-warn'), liSave: $('#li-save')
+    arContravention: $('#ar-contravention'), arError: $('#ar-error'),
+    arWarn: $('#ar-warn'), arSave: $('#ar-save'),
+    arPhotos: $('#ar-photos'), arPhotoList: $('#ar-photo-list'),
+    arInspDate: $('#ar-insp-date'), arCoords: $('#ar-coords'),
+    arGps: $('#ar-gps'), arCoordNote: $('#ar-coord-note'), arFindings: $('#ar-findings')
   });
 }
 
@@ -577,22 +849,22 @@ function wireEvents() {
       ['records', 'verify', 'map'].forEach((name) =>
         $(`#page-${name}`).classList.toggle('hidden', name !== tab.dataset.tab));
 
-      // The floating action only makes sense on the Records tab.
-      el.fab.classList.toggle('hidden', tab.dataset.tab === 'map');
-      el.fab.textContent = tab.dataset.tab === 'verify' ? '+ Log Inspection' : '+ Add Land Record';
+      // Records is the only tab you create from. Field Records is a register of
+      // what has been done, and inspections are captured on the record itself.
+      el.fab.classList.toggle('hidden', tab.dataset.tab !== 'records');
+
+      if (tab.dataset.tab === 'map') renderMap().catch(() => {});
     });
   });
 
-  el.fab.addEventListener('click', () => {
-    const active = document.querySelector('.tab.is-active').dataset.tab;
-    (active === 'verify' ? openLogInspection() : openAddRecord()).catch((e) => fatal('Open form', e));
-  });
+  el.fab.addEventListener('click', () => openAddRecord().catch((e) => fatal('Open form', e)));
 
   document.querySelectorAll('[data-close]').forEach((btn) =>
     btn.addEventListener('click', () => btn.closest('.sheet').classList.add('hidden')));
 
   document.querySelectorAll('[data-title-type]').forEach((btn) =>
-    btn.addEventListener('click', () => setTitleType(btn.dataset.titleType)));
+    btn.addEventListener('click', () =>
+      setTitleType(btn.dataset.titleType).catch((e) => fatal('Switch title type', e))));
 
   el.arFileSearch.addEventListener('input', () => searchFiles().catch(() => {}));
   el.arFileResults.addEventListener('click', (e) => {
@@ -604,25 +876,62 @@ function wireEvents() {
   el.arExisting.addEventListener('change', updateContravention);
   el.arSave.addEventListener('click', () => saveLandRecord().catch((e) => fatal('Save', e)));
 
-  el.liGps.addEventListener('click', () => captureGps().catch((e) => fatal('GPS', e)));
-  el.liSave.addEventListener('click', () => saveInspection().catch((e) => fatal('Save', e)));
+  el.arGps.addEventListener('click', () => captureGps().catch((e) => fatal('GPS', e)));
+
   // Re-typing coordinates clears the "save anyway" prompt.
-  el.liCoords.addEventListener('input', () => el.liWarn.classList.add('hidden'));
+  el.arCoords.addEventListener('input', () => el.arWarn.classList.add('hidden'));
+
+  el.arPhotos.addEventListener('change', async () => {
+    try {
+      state.photos = await readPhotos(el.arPhotos);
+      renderThumbs(state.photos);
+    } catch (error) {
+      fatal('Photos', error);
+    }
+  });
+
+  // "+" on a Not Added file opens the sheet pre-filled for that file.
+  el.listRecords.addEventListener('click', (e) => {
+    const button = e.target.closest('.rec-add');
+    if (button) openForIndexedFile(button.dataset.fileno).catch((err) => fatal('Open', err));
+  });
 
   el.searchRecords.addEventListener('input', () => renderRecords().catch(() => {}));
   el.searchVerify.addEventListener('input', () => renderVerify().catch(() => {}));
 
   el.btnSync.addEventListener('click', async () => {
     el.btnSync.disabled = true;
-    const report = await sync.syncNow({ includeLookups: true });
 
-    if (report.skipped === 'offline') toast('Still offline. Nothing sent.', 'warn');
-    else if (report.error) toast(report.error, 'error');
-    else toast(`Sent ${report.pushed}, received ${report.pulled}.`, 'success');
+    try {
+      const report = await sync.syncNow({ includeLookups: true });
 
-    await renderAll();
-    el.btnSync.disabled = false;
+      // syncNow returns {skipped} with no counters when it declines to run.
+      // Reading report.pushed regardless produced "Sent undefined, received
+      // undefined" on screen — handle every shape it can return.
+      if (report.skipped === 'offline') {
+        toast('Still offline. Nothing sent — your work is saved on the device.', 'warn');
+      } else if (report.skipped === 'already-running') {
+        toast('A sync is already running.', 'warn');
+      } else if (report.skipped === 'not-logged-in') {
+        toast('Sign in to sync.', 'warn');
+      } else if (report.error) {
+        toast(report.error, 'error');
+      } else {
+        const bits = [`Sent ${report.pushed ?? 0}`, `received ${report.pulled ?? 0}`];
+        if (report.conflicts) bits.push(`${report.conflicts} conflict(s)`);
+        if (report.failed) bits.push(`${report.failed} failed`);
+        toast(bits.join(', ') + '.', report.conflicts || report.failed ? 'warn' : 'success');
+      }
+    } catch (error) {
+      fatal('Sync', error);
+    } finally {
+      await renderAll();
+      el.btnSync.disabled = false;
+    }
   });
+
+  // The conflict counter is the only route to what actually went wrong.
+  el.syncText.addEventListener('click', () => showConflicts().catch((e) => fatal('Conflicts', e)));
 
   sync.onSyncEvent((event) => {
     if (event.type === 'start') el.syncText.textContent = 'Syncing...';

@@ -243,6 +243,15 @@ function makeHandle(plugin) {
       plugin.run({ ...base, statement, values, transaction }),
     query: (statement, values = []) =>
       plugin.query({ ...base, statement, values }),
+    /**
+     * Run many parameterised statements inside ONE transaction.
+     *
+     * Seeding the file index row by row means two statements and two
+     * transactions per row — hundreds of disk syncs, which is slow enough on a
+     * handset to look like a hang. `set` is a list of {statement, values}.
+     */
+    executeSet: (set, transaction = true) =>
+      plugin.executeSet({ ...base, set, transaction }),
     close: () => plugin.close(base),
     closeConnection: () => plugin.closeConnection(base)
   };

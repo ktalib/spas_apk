@@ -116,17 +116,28 @@ export async function listNames(table) {
  * first time anyone opens them, so the next visit works offline.
  */
 export async function cacheFileIndex(entries) {
+  const rowsToWrite = (entries || []).filter((row) => row.file_number);
+
+  if (!rowsToWrite.length) return;
+
   const db = await ensureDatabase();
 
-  for (const row of entries || []) {
-    if (!row.file_number) continue;
+  // One transaction for the whole batch. Done row by row this was two
+  // statements and two disk syncs per file, which on a seed of a few hundred
+  // is slow enough on a handset to look like the app has hung.
+  const set = [];
 
-    await db.run('DELETE FROM file_index_cache WHERE file_number = ?', [row.file_number]);
-    await db.run(
-      `INSERT INTO file_index_cache
+  for (const row of rowsToWrite) {
+    set.push({
+      statement: 'DELETE FROM file_index_cache WHERE file_number = ?',
+      values: [row.file_number]
+    });
+
+    set.push({
+      statement: `INSERT INTO file_index_cache
         (file_number, file_title, owner_name, land_use_type, location, district, lga, phone, tracking_id, file_indexing_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+      values: [
         row.file_number,
         row.file_title ?? null,
         row.owner_name ?? null,
@@ -138,8 +149,10 @@ export async function cacheFileIndex(entries) {
         row.tracking_id ?? null,
         row.file_indexing_id ?? null
       ]
-    );
+    });
   }
+
+  await db.executeSet(set);
 }
 
 export async function searchFileIndex(term, limit = 25) {
@@ -152,6 +165,87 @@ export async function searchFileIndex(term, limit = 25) {
       ORDER BY file_number LIMIT ?`,
     [like, like, like, like, limit]
   ));
+}
+
+/**
+ * The Records tab: the indexed-file universe, each row carrying whatever SPAS
+ * status it has.
+ *
+ * This mirrors the web page, which lists `file_indexings` joined to
+ * `spa_applications` — not the applications alone. The distinction matters: a
+ * surveyor arrives at a plot knowing its file number and needs to find it in
+ * the list, whether or not anyone has inspected it yet. A file with no
+ * application is `not_added`, and that is precisely the row they act on.
+ *
+ * Locally-created customary records have no row in the file index, so they are
+ * unioned in — otherwise a record captured in the field would vanish from the
+ * list the moment it was saved.
+ */
+export async function listIndexedFiles({ search = '', limit = 300 } = {}) {
+  const db = await ensureDatabase();
+  const like = `%${search}%`;
+
+  const where = search
+    ? `WHERE c.file_number LIKE ? OR c.file_title LIKE ? OR c.owner_name LIKE ? OR c.location LIKE ?`
+    : '';
+
+  const params = search ? [like, like, like, like, limit] : [limit];
+
+  const indexed = rows(await db.query(
+    `SELECT
+        c.file_number,
+        COALESCE(a.owner_name, c.owner_name, c.file_title) AS owner_name,
+        COALESCE(a.location, c.location)                   AS location,
+        COALESCE(a.land_use_type, c.land_use_type)         AS land_use_type,
+        c.district, c.lga, c.tracking_id, c.file_indexing_id,
+        a.client_uuid, a.status, a.sync_status,
+        a.proposed_use, a.existing_use
+      FROM file_index_cache c
+      LEFT JOIN spa_applications a ON a.file_number = c.file_number
+      ${where}
+      ORDER BY c.file_number
+      LIMIT ?`,
+    params
+  ));
+
+  // Records created on this device that are not in the cached index.
+  const localWhere = search
+    ? `AND (a.file_number LIKE ? OR a.owner_name LIKE ? OR a.location LIKE ?)`
+    : '';
+  const localParams = search ? [like, like, like, limit] : [limit];
+
+  const local = rows(await db.query(
+    `SELECT
+        a.file_number, a.owner_name, a.location, a.land_use_type,
+        a.district, a.lga, a.tracking_id, a.file_indexing_id,
+        a.client_uuid, a.status, a.sync_status,
+        a.proposed_use, a.existing_use
+      FROM spa_applications a
+      WHERE NOT EXISTS (
+        SELECT 1 FROM file_index_cache c WHERE c.file_number = a.file_number
+      )
+      ${localWhere}
+      ORDER BY a.created_at DESC
+      LIMIT ?`,
+    localParams
+  ));
+
+  return [...local, ...indexed].map((r) => ({
+    ...r,
+    // `not_added` is the actionable state: an indexed file nobody has
+    // inspected yet.
+    status_raw: r.client_uuid ? (r.status || 'open') : 'not_added'
+  }));
+}
+
+export async function findIndexedFile(fileNumber) {
+  const db = await ensureDatabase();
+  const found = rows(await db.query(
+    'SELECT * FROM file_index_cache WHERE file_number = ?',
+    [fileNumber]
+  ));
+
+  return found[0] || null;
 }
 
 export async function countFileIndex() {

@@ -2,19 +2,26 @@
    Dark by default on purpose: the existing SPAS mobile web page is dark, so the
    app should not look like a different product to the same surveyors. */
 
+/* Tokens copied from resources/views/special_assignment/mobile.blade.php so the
+   app and the web page are visibly the same product to the same surveyors. */
 :root {
   color-scheme: dark;
-  --bg: #0b1220;
-  --surface: #131c2e;
-  --surface-2: #1a2540;
-  --line: #22304d;
-  --text: #e8eefc;
-  --muted: #93a3c0;
-  --brand: #bcc00c;
-  --ok: #34d399;
-  --warn: #fbbf24;
-  --danger: #f87171;
-  --radius: 14px;
+  --bg: #0b0e14;
+  --surface: #151921;
+  --surface-2: #1e2530;
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --dim: #475569;
+  --brand: #babf0c;
+  --brand-dim: rgba(186, 191, 12, 0.15);
+  --brand-glow: rgba(186, 191, 12, 0.28);
+  --ok: #10b981;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -107,6 +114,8 @@ textarea { resize: vertical; }
   border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted);
 }
 .syncbar .btn { margin-left: auto; }
+/* Tappable: it is the only route to the conflict detail. */
+#sync-text { cursor: pointer; }
 
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot[data-state="online"]  { background: var(--ok); }
@@ -119,7 +128,56 @@ textarea { resize: vertical; }
   background: var(--surface); color: var(--muted);
   border: 1px solid var(--line); font: inherit; font-size: 13px; font-weight: 600;
 }
-.tab.is-active { background: var(--brand); color: #10131a; border-color: var(--brand); }
+/* The web page tints the active pill rather than filling it solid. */
+.tab.is-active { background: var(--brand-dim); border-color: var(--brand); color: var(--brand); }
+
+/* ---------- record cards (Records tab) ---------- */
+
+.rec {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.rec__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 11px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Monospace so file numbers align down the list and are easy to scan. */
+.rec__no { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--brand); }
+
+.rec__right { display: flex; align-items: center; gap: 8px; }
+
+.rec__status {
+  font-size: 9px; font-weight: 800; letter-spacing: .04em;
+  padding: 3px 9px; border-radius: 99px; text-transform: uppercase;
+}
+.rec__status.is-open               { background: rgba(59,130,246,.15); color: #60a5fa; }
+.rec__status.is-in_progress        { background: rgba(245,158,11,.15); color: var(--warn); }
+.rec__status.is-approved           { background: rgba(16,185,129,.15); color: var(--ok); }
+.rec__status.is-certificate_issued { background: rgba(16,185,129,.15); color: var(--ok); }
+.rec__status.is-closed             { background: rgba(71,85,105,.3);  color: var(--dim); }
+.rec__status.is-not_added          { background: rgba(71,85,105,.2);  color: #64748b; }
+
+/* The one control on a file nobody has inspected yet. */
+.rec-add {
+  width: 30px; height: 30px; flex: none; cursor: pointer;
+  display: grid; place-items: center;
+  background: var(--brand-dim); color: var(--brand);
+  border: 1px solid var(--brand); border-radius: 50%;
+  font: 700 18px/1 system-ui; padding: 0;
+}
+.rec-add:active { transform: scale(.94); }
+
+.rec__body { padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 5px; }
+.rec__row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.rec__row span { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); flex: none; }
+.rec__row b { font-size: 12.5px; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.rec__row b.is-danger { color: var(--danger); }
 
 .page { padding: 4px 14px calc(96px + env(safe-area-inset-bottom)); }
 
@@ -231,6 +289,25 @@ textarea { resize: vertical; }
 
 .row { display: flex; gap: 8px; }
 .row input { flex: 1; }
+
+/* Inline field-inspection divider inside the record sheet. */
+.section { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 2px; }
+.section h3 { margin: 0; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--brand); }
+
+.thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.thumb {
+  width: 68px; height: 68px; object-fit: cover;
+  border-radius: var(--radius-sm); border: 1px solid var(--line);
+}
+
+/* Field map canvas. Kept tall enough to be usable one-handed. */
+.map {
+  height: 320px; width: 100%;
+  border-radius: var(--radius); overflow: hidden;
+  border: 1px solid var(--line); background: var(--surface);
+  margin-bottom: 12px;
+}
+.leaflet-container { background: var(--surface); }
 
 .results {
   max-height: 210px; overflow-y: auto;

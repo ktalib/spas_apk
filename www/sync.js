@@ -169,26 +169,70 @@ export async function pullDeltas() {
 // Reference data
 // ---------------------------------------------------------------------------
 
+/**
+ * How many indexed files to pre-seed.
+ *
+ * Kept modest on purpose. The unfiltered lookup sorts across ~133,000 rows
+ * server-side and the payload crosses a field connection that is often 2G, so
+ * asking for a big page is how a first sign-in ends in a timeout. The cache
+ * also grows organically from every lookup the surveyor performs, so this is a
+ * starting set and not the whole working set.
+ */
+const SEED_FILE_INDEX = 250;
+
+/**
+ * Refresh the reference caches.
+ *
+ * Each cache is fetched independently: one slow or failing endpoint must not
+ * cost the others. The LGA and district lists are tiny and are what the
+ * customary form cannot work without, so they matter more than the file index.
+ */
 export async function refreshLookups({ lga = null } = {}) {
-  const [landUses, lgas, districts] = await Promise.all([
-    api.fetchLandUses(),
-    api.fetchLgas(),
-    api.fetchDistricts()
-  ]);
+  const failures = [];
 
-  await store.seedLandUses(landUses.data, landUses.customary);
-  await store.seedNameCache('lga_cache', lgas.data);
-  await store.seedNameCache('district_cache', districts.data);
+  const step = async (label, run) => {
+    try {
+      await run();
+    } catch (error) {
+      failures.push(`${label}: ${error.message}`);
+    }
+  };
 
-  // Pre-seed the file index for the surveyor's area. The server resolves LGA
-  // spelling variants, so this picks up the misspelt rows too.
-  if (lga) {
-    const index = await api.fetchFileIndex({ lga, limit: 1000 });
+  await step('land uses', async () => {
+    const landUses = await api.fetchLandUses();
+    await store.seedLandUses(landUses.data, landUses.customary);
+  });
+
+  await step('LGAs', async () => {
+    const lgas = await api.fetchLgas();
+    await store.seedNameCache('lga_cache', lgas.data);
+  });
+
+  await step('districts', async () => {
+    const districts = await api.fetchDistricts();
+    await store.seedNameCache('district_cache', districts.data);
+  });
+
+  // The Records tab lists indexed files, so without this the main screen is
+  // empty on first run. With an LGA the server also resolves that LGA's
+  // spelling variants, which is worth thousands of files (see LgaNormalizer).
+  await step('file index', async () => {
+    const index = await api.fetchFileIndex(
+      lga ? { lga, limit: SEED_FILE_INDEX } : { limit: SEED_FILE_INDEX }
+    );
+
     await store.cacheFileIndex(index.data);
-    await store.setMeta('file_index.lga', lga);
-  }
+
+    if (lga) {
+      await store.setMeta('file_index.lga', lga);
+    }
+  });
 
   await store.setMeta('last_pull.lookups', new Date().toISOString());
+
+  if (failures.length) {
+    throw new Error(failures.join('; '));
+  }
 }
 
 // ---------------------------------------------------------------------------

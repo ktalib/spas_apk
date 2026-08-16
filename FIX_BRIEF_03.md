@@ -59,12 +59,71 @@ http://app.klaes.ng/api/spas/lookup/lgas
 ```powershell
 npx cap sync
 cd android
-.\gradlew assembleDebug
-adb install -r app\build\outputs\apk\debug\app-debug.apk
+.\gradlew clean
+.\gradlew assembleDebug; if ($?) { adb install -r app\build\outputs\apk\debug\app-debug.apk }
 ```
+
+**Run `clean` whenever `www/` changed.** Skipping it fails like this:
+
+```
+Zip file '...\compressed_assets\debug\...\assets\public\api.js.jar'
+already contains entry 'assets/public/api.js', cannot overwrite
+```
+
+That is an Android Gradle Plugin bug, not a problem with the code: the
+incremental `compressDebugAssets` task tries to re-add entries to the archives
+it built last time. The named files are always the ones that changed. If `clean`
+somehow does not clear it, delete `app\build\intermediates\compressed_assets`.
+
+**Do not chain `adb install` with `;` alone.** PowerShell 5.1 has no `&&`, so a
+failed build still runs the install and quietly puts the PREVIOUS APK back on
+the device — you then test the old build and misread the result. Use the
+`if ($?)` form above.
 
 If `JAVA_HOME` / `ANDROID_HOME` still bite, see `FIX_BRIEF_02.md` §2 — the empty
 `C:\Android\sdk` decoy and JDK 26 on `PATH` are the two traps on this machine.
+
+### ⚠ COPY THE `android/` FOLDER TOO — NOT JUST `www/`
+
+On 2026-08-16 a build reported:
+
+```
+GPS failed: Missing the following permissions in AndroidManifest.xml:
+android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION
+```
+
+Those permissions **are** in this repo's manifest. The message means the build
+machine used its own older `android/` folder, so the edit never arrived.
+`npx cap sync` copies `www/` and plugin wiring — it does **not** author your
+`AndroidManifest.xml`, and it will not add anything missing there.
+
+Copy these four, every time:
+
+```
+www/                                              (the app)
+capacitor.config.json                             (mixed content + cleartext)
+android/app/src/main/AndroidManifest.xml          (permissions, backup, netconfig)
+android/app/src/main/res/xml/network_security_config.xml
+android/app/src/main/res/mipmap-*/                (launcher icons)
+android/app/src/main/res/values/ic_launcher_background.xml
+```
+
+**Verify before building** — this takes five seconds and would have saved a
+whole build cycle:
+
+```powershell
+Select-String -Path android\app\src\main\AndroidManifest.xml -Pattern "LOCATION|allowBackup|networkSecurityConfig"
+```
+
+Expect four lines: two LOCATION permissions, `allowBackup="false"`, and the
+`networkSecurityConfig` reference. Fewer means you are building the wrong
+manifest.
+
+After building, confirm they actually merged:
+
+```powershell
+Select-String -Path android\app\build\intermediates\merged_manifest\debug\processDebugMainManifest\AndroidManifest.xml -Pattern "LOCATION"
+```
 
 ### Two manifest changes you must not revert
 

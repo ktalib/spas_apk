@@ -120,10 +120,13 @@ async function request(method, path, { body, formData, timeout = 30000 } = {}) {
     // block, a wrong host or bad DNS all land here too, and saying "no
     // connection" when the phone has full signal sends everyone hunting the
     // wrong problem. Name the host so the message is actionable.
+    // Name the endpoint, not just the host. "Timed out reaching
+    // http://app.klaes.ng" cannot tell you whether sign-in itself failed or a
+    // reference-data download did, which are very different problems.
     throw new ApiError(
       controller.signal.aborted
-        ? `Timed out reaching ${base}.`
-        : `Could not reach ${base}. Check the server address, or your connection.`,
+        ? `Timed out after ${Math.round(timeout / 1000)}s on ${method} ${path}.`
+        : `Could not reach ${base}${path}. Check the server address, or your connection.`,
       0
     );
   } finally {
@@ -250,6 +253,11 @@ export function fetchDistricts() {
   return request('GET', '/lookup/districts');
 }
 
+/**
+ * The heaviest lookup: a few hundred rows over a field connection. Given a
+ * longer budget than the default because timing out here should be rare and is
+ * never fatal — the caller treats it as best-effort.
+ */
 export function fetchFileIndex(params = {}) {
   const qs = new URLSearchParams();
 
@@ -262,7 +270,7 @@ export function fetchFileIndex(params = {}) {
     }
   });
 
-  return request('GET', `/lookup/file-index?${qs.toString()}`);
+  return request('GET', `/lookup/file-index?${qs.toString()}`, { timeout: 60000 });
 }
 
 export function nextCustomaryFileNumber() {
