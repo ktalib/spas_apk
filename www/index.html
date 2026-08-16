@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>SPAS Mobile</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+
+    <!-- ================= LOGIN ================= -->
+    <section id="screen-login" class="screen">
+      <div class="login">
+        <div class="brand">
+          <div class="brand__mark">SPAS</div>
+          <div>
+            <h1>SPAS Mobile</h1>
+            <p>Special Assignment &middot; Field Survey</p>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>Username, email or phone</span>
+          <input id="login-identifier" type="text" autocomplete="username" autocapitalize="none" />
+        </label>
+
+        <label class="field">
+          <span>Password</span>
+          <input id="login-password" type="password" autocomplete="current-password" />
+        </label>
+
+        <details class="advanced">
+          <summary>Server</summary>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="login-base" type="url" inputmode="url" autocapitalize="none" />
+          </label>
+        </details>
+
+        <button id="btn-login" class="btn btn--primary btn--lg">Sign in</button>
+
+        <p id="login-error" class="error hidden"></p>
+
+        <p class="hint">
+          You must sign in once with a connection. After that the app works
+          offline and syncs when signal returns.
+        </p>
+      </div>
+    </section>
+
+    <!-- ================= APP ================= -->
+    <section id="screen-app" class="screen hidden">
+
+      <header class="topbar">
+        <div class="topbar__brand">
+          <div class="brand__mark brand__mark--sm">SPAS</div>
+          <div>
+            <strong>SPAS Mobile</strong>
+            <small id="who">Special Assignment</small>
+          </div>
+        </div>
+        <button id="btn-logout" class="btn btn--ghost btn--sm">Log out</button>
+      </header>
+
+      <div class="syncbar">
+        <span id="net-dot" class="dot"></span>
+        <span id="sync-text">Ready.</span>
+        <button id="btn-sync" class="btn btn--sm">Sync now</button>
+      </div>
+
+      <nav class="tabs">
+        <button class="tab is-active" data-tab="records">Records</button>
+        <button class="tab" data-tab="verify">Field Records</button>
+        <button class="tab" data-tab="map">Field Map</button>
+      </nav>
+
+      <!-- ---- Tab: Records ---- -->
+      <main id="page-records" class="page">
+        <div class="stats">
+          <div class="stat"><b id="stat-total">0</b><span>Total</span></div>
+          <div class="stat"><b id="stat-open">0</b><span>Open</span></div>
+          <div class="stat"><b id="stat-progress">0</b><span>In progress</span></div>
+          <div class="stat stat--warn"><b id="stat-pending">0</b><span>Pending sync</span></div>
+        </div>
+
+        <input id="search-records" class="search" type="search" placeholder="Search file number, owner, location" />
+
+        <div id="list-records" class="list"></div>
+      </main>
+
+      <!-- ---- Tab: Field Records ---- -->
+      <main id="page-verify" class="page hidden">
+        <input id="search-verify" class="search" type="search" placeholder="Search inspections" />
+        <div id="list-verify" class="list"></div>
+      </main>
+
+      <!-- ---- Tab: Field Map ---- -->
+      <main id="page-map" class="page hidden">
+        <div class="notice">
+          Satellite tiles need a connection. Plotted points are listed here and
+          work offline; tap one to copy its coordinates.
+        </div>
+        <h3 class="section-title">Plotted <span id="count-plotted" class="pill">0</span></h3>
+        <div id="list-map" class="list"></div>
+
+        <h3 class="section-title">Awaiting location <span id="count-awaiting" class="pill pill--warn">0</span></h3>
+        <p class="hint">Captured with no GPS fix. The office can place these later.</p>
+        <div id="list-awaiting" class="list"></div>
+      </main>
+
+      <button id="fab" class="fab">+ Add Land Record</button>
+    </section>
+
+    <!-- ================= SHEET: Add Land Record ================= -->
+    <div id="sheet-add-record" class="sheet hidden">
+      <div class="sheet__panel">
+        <div class="sheet__head">
+          <h2>Add Land Record</h2>
+          <button class="sheet__close" data-close>&times;</button>
+        </div>
+
+        <div class="sheet__body">
+          <div class="toggle">
+            <button class="toggle__btn is-active" data-title-type="statutory">Statutory</button>
+            <button class="toggle__btn" data-title-type="customary">Customary</button>
+          </div>
+
+          <!-- Statutory: pick an indexed file from the local cache -->
+          <div id="grp-statutory">
+            <label class="field">
+              <span>File number <i>*</i></span>
+              <input id="ar-file-search" type="search" placeholder="Type at least 2 characters" autocapitalize="characters" />
+            </label>
+            <div id="ar-file-results" class="results hidden"></div>
+            <p class="hint" id="ar-file-hint"></p>
+          </div>
+
+          <label class="field">
+            <span>Owner / file title <i>*</i></span>
+            <input id="ar-owner" type="text" />
+          </label>
+
+          <label class="field">
+            <span>Phone</span>
+            <input id="ar-phone" type="tel" inputmode="tel" />
+          </label>
+
+          <!-- Customary: address is picked by hand -->
+          <div id="grp-customary" class="hidden">
+            <label class="field">
+              <span>LGA <i>*</i></span>
+              <select id="ar-lga"></select>
+            </label>
+            <label class="field">
+              <span>District</span>
+              <select id="ar-district"></select>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Location</span>
+            <input id="ar-location" type="text" />
+          </label>
+
+          <label class="field">
+            <span>General landuse (observed around)</span>
+            <select id="ar-land-use"></select>
+          </label>
+
+          <label class="field">
+            <span>Approved land use <i>*</i></span>
+            <select id="ar-proposed"></select>
+          </label>
+
+          <label class="field">
+            <span>Prevailing land use <i>*</i></span>
+            <select id="ar-existing"></select>
+          </label>
+
+          <div id="ar-contravention" class="badge badge--danger hidden">Contravention</div>
+
+          <p id="ar-error" class="error hidden"></p>
+        </div>
+
+        <div class="sheet__foot">
+          <button id="ar-save" class="btn btn--primary btn--lg">Save record</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= SHEET: Log Field Inspection ================= -->
+    <div id="sheet-log-inspect" class="sheet hidden">
+      <div class="sheet__panel">
+        <div class="sheet__head">
+          <h2>Log Field Inspection</h2>
+          <button class="sheet__close" data-close>&times;</button>
+        </div>
+
+        <div class="sheet__body">
+          <label class="field">
+            <span>Linked application <i>*</i></span>
+            <select id="li-application"></select>
+          </label>
+
+          <label class="field">
+            <span>Inspection date <i>*</i></span>
+            <input id="li-date" type="date" />
+          </label>
+
+          <label class="field">
+            <span>Coordinates</span>
+            <div class="row">
+              <input id="li-coords" type="text" inputmode="decimal" placeholder="latitude, longitude" />
+              <button id="li-gps" class="btn btn--sm">GPS</button>
+            </div>
+          </label>
+          <p id="li-coord-note" class="hint"></p>
+
+          <label class="field">
+            <span>Findings <i>*</i></span>
+            <textarea id="li-findings" rows="4"></textarea>
+          </label>
+
+          <p id="li-error" class="error hidden"></p>
+          <p id="li-warn" class="warn hidden"></p>
+        </div>
+
+        <div class="sheet__foot">
+          <button id="li-save" class="btn btn--primary btn--lg">Save inspection</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "appId": "ng.gov.kanostate.klaes.spas",
+  "appName": "SPAS Mobile",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 800,
+      "backgroundColor": "#0b1220",
+      "showSpinner": false
+    }
+  }
+}
