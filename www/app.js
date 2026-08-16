@@ -95,9 +95,20 @@ async function doLogin() {
 
     await enterApp();
   } catch (error) {
-    el.loginError.textContent = error.isOffline
-      ? 'No connection. The first sign-in needs a network.'
-      : error.message;
+    let message = error.message;
+
+    if (error.isOffline) {
+      // Distinguish "no signal" from "signal, but the request was blocked or
+      // the address is wrong". Both used to read as "no connection", which is
+      // actively misleading when the phone is plainly online.
+      const online = await sync.isOnline();
+
+      message = online
+        ? `${error.message}\n\nThe device reports a working connection, so this is usually the wrong server address, or the API is not deployed yet.`
+        : 'No signal. The first sign-in needs a connection; after that the app works offline.';
+    }
+
+    el.loginError.textContent = message;
     el.loginError.classList.remove('hidden');
   } finally {
     el.btnLogin.disabled = false;

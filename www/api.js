@@ -115,9 +115,15 @@ async function request(method, path, { body, formData, timeout = 30000 } = {}) {
       signal: controller.signal
     });
   } catch (error) {
-    // Offline, DNS failure, timeout. Never a reason to drop queued work.
+    // fetch() throwing means the request never reached the server. That is not
+    // proof the device is offline: a blocked cleartext call, a mixed-content
+    // block, a wrong host or bad DNS all land here too, and saying "no
+    // connection" when the phone has full signal sends everyone hunting the
+    // wrong problem. Name the host so the message is actionable.
     throw new ApiError(
-      controller.signal.aborted ? 'Request timed out.' : 'No connection to the server.',
+      controller.signal.aborted
+        ? `Timed out reaching ${base}.`
+        : `Could not reach ${base}. Check the server address, or your connection.`,
       0
     );
   } finally {
