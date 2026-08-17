@@ -69,6 +69,10 @@
         <button id="btn-sync" class="btn btn--sm">Sync now</button>
       </div>
 
+      <!-- Pull-to-refresh indicator. Sits under the tabs and is revealed by the
+           drag itself, so it never occupies space when idle. -->
+      <div id="ptr" class="ptr"><span class="ptr__spinner"></span><span id="ptr-text">Pull to sync</span></div>
+
       <nav class="tabs">
         <button class="tab is-active" data-tab="records">Records</button>
         <button class="tab" data-tab="verify">Field Records</button>
@@ -110,10 +114,10 @@
         <div id="list-awaiting" class="list"></div>
       </main>
 
-      <button id="fab" class="fab">+ Add Land Record</button>
+      <button id="fab" class="fab">+ Log Inspection</button>
     </section>
 
-    <!-- ================= SHEET: Add Land Record ================= -->
+    <!-- ================= SHEET: Log Inspection ================= -->
     <div id="sheet-add-record" class="sheet hidden">
       <div class="sheet__panel">
         <div class="sheet__head">
@@ -122,7 +126,7 @@
             "Log Inspection", because that land record already exists and the
             surveyor is inspecting it, not creating it.
           -->
-          <h2 id="ar-title">Add Land Record</h2>
+          <h2 id="ar-title">Log Inspection</h2>
           <button class="sheet__close" data-close>&times;</button>
         </div>
 
@@ -153,14 +157,19 @@
           </label>
 
           <!-- Customary: address is picked by hand -->
+          <!--
+            District before LGA: it is the narrower of the two and the one a
+            surveyor names first on the ground. Between them they compose the
+            location for a customary entry, which has no register address.
+          -->
           <div id="grp-customary" class="hidden">
-            <label class="field">
-              <span>LGA <i>*</i></span>
-              <select id="ar-lga"></select>
-            </label>
             <label class="field">
               <span>District</span>
               <select id="ar-district"></select>
+            </label>
+            <label class="field">
+              <span>LGA <i>*</i></span>
+              <select id="ar-lga"></select>
             </label>
           </div>
 
@@ -168,6 +177,7 @@
             <span>Location</span>
             <input id="ar-location" type="text" />
           </label>
+          <p id="ar-location-note" class="hint"></p>
 
           <!--
             One land-use field, not two.

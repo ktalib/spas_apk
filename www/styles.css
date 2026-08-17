@@ -122,6 +122,27 @@ textarea { resize: vertical; }
 .dot[data-state="online"]  { background: var(--ok); }
 .dot[data-state="offline"] { background: var(--danger); }
 
+/* ---------- pull to refresh ---------- */
+
+.ptr {
+  height: 0; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  font-size: 12.5px; color: var(--muted);
+  background: var(--surface-2);
+  transition: height .18s ease;
+}
+.ptr[data-state="ready"] { color: var(--brand); }
+.ptr[data-state="busy"]  { color: var(--brand); }
+
+.ptr__spinner {
+  width: 14px; height: 14px; flex: none;
+  border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%;
+  opacity: .5;
+}
+.ptr[data-state="ready"] .ptr__spinner { opacity: 1; transform: rotate(180deg); transition: transform .2s; }
+.ptr[data-state="busy"]  .ptr__spinner { opacity: 1; animation: boot-spin .7s linear infinite; }
+
 .tabs { display: flex; gap: 6px; padding: 10px 14px; overflow-x: auto; }
 .tab {
   flex: 1; white-space: nowrap; cursor: pointer;
@@ -304,11 +325,17 @@ input:disabled, select:disabled, textarea:disabled {
 }
 .toggle__btn.is-locked { opacity: .4; }
 
+/* `flex: none` and min-height are both load-bearing.
+   .sheet__body is a flex column, so a flex item with only `height` still gets
+   shrunk to its content — and an empty map div has no content, so it collapsed
+   to a 1px line with the tiles never rendering. */
 .map {
-  height: 190px; width: 100%;
+  flex: none;
+  height: 190px; min-height: 190px; width: 100%;
   border: 1px solid var(--line); border-radius: var(--radius);
   overflow: hidden; background: var(--surface);
 }
+.map .leaflet-container { height: 100%; width: 100%; background: var(--surface); }
 /* Leaflet paints its own controls light; keep them legible on the dark sheet. */
 .map .leaflet-control-zoom a {
   background: var(--surface); color: var(--text); border-color: var(--line);

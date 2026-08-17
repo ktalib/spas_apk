@@ -15,7 +15,7 @@ import {
   validateLandRecord, validateFieldData,
   parseCoordinates, hasErrors, firstError
 } from './validate.js';
-import { resolveLandUse, resolveOwner } from './landuse.js';
+import { resolveLandUse, resolveOwner, cleanLocation, composeLocation } from './landuse.js';
 import { mountPinMap } from './map.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -327,7 +327,7 @@ async function renderRecords() {
         </header>
         <div class="rec__body">
           <div class="rec__row"><span>Owner</span><b>${esc(resolveOwner(r) || '—')}</b></div>
-          <div class="rec__row"><span>Location</span><b>${esc(r.location || r.lga || '—')}</b></div>
+          <div class="rec__row"><span>Location</span><b>${esc(cleanLocation(r.location) || r.lga || '—')}</b></div>
           <div class="rec__row"><span>Land use</span><b>${esc(resolveLandUse(r) || '—')}</b></div>
           ${contravenes(r) ? '<div class="rec__row"><span>Status</span><b class="is-danger">Contravention</b></div>' : ''}
         </div>
@@ -617,8 +617,17 @@ async function applyFieldRules() {
   el.grpStatutory.classList.toggle('hidden', customary);
   el.grpCustomary.classList.toggle('hidden', !customary);
 
+  // Identity and address come from the register when a file was picked from
+  // the list. They are shown so the surveyor can confirm they are at the right
+  // plot, but not edited — a correction typed here would diverge from the
+  // register without correcting it.
   lock(el.arFileSearch, fromIndex);
   lock(el.arOwner, fromIndex);
+  lock(el.arLocation, fromIndex || customary);
+
+  el.arLocationNote.textContent = fromIndex
+    ? 'From the file register.'
+    : (customary ? 'Built from the district and LGA you choose.' : '');
 
   el.arLandUseLabel.textContent = customary
     ? 'General landuse (observed around)'
@@ -694,7 +703,9 @@ async function pickFile(fileNumber) {
   el.arFileSearch.value = row.file_number;
   el.arOwner.value = resolveOwner(row) || '';
   el.arPhone.value = row.phone || '';
-  el.arLocation.value = row.location || '';
+  // The plot number is already the file number; repeating it pushes the part
+  // that actually locates the parcel off a phone screen.
+  el.arLocation.value = cleanLocation(row.location) || '';
 
   // Falls back to the file-number prefix when the register has no land use.
   const use = resolveLandUse(row);
@@ -763,8 +774,13 @@ async function saveLandRecord() {
     existing_use: el.arExisting.value
   };
 
-  if (state.titleType === 'customary' && data.lga) {
-    data.location = data.location || [el.arDistrict.value, el.arLga.value].filter(Boolean).join(', ');
+  // A customary title has no register address, so the district and LGA the
+  // surveyor picked ARE the location. Composed rather than typed, so it always
+  // matches the two fields it came from.
+  if (state.titleType === 'customary') {
+    data.location = composeLocation(el.arDistrict.value, el.arLga.value) || data.location;
+  } else {
+    data.location = cleanLocation(data.location) || data.location;
   }
 
   // Refuse rather than queue. An invalid row would fail on every push attempt,
@@ -981,6 +997,90 @@ async function renderMapCanvas(points) {
 }
 
 // ---------------------------------------------------------------------------
+// Pull to refresh
+// ---------------------------------------------------------------------------
+
+/**
+ * Drag down at the top of a list to sync.
+ *
+ * Hand-rolled rather than pulled from a library: it is thirty lines, and the
+ * alternative is another dependency in a project with no bundler.
+ *
+ * Only arms when the scroller is already at the very top, so it cannot fight
+ * an ordinary scroll — the usual complaint about pull-to-refresh.
+ */
+const PTR_TRIGGER = 70;
+
+function wirePullToRefresh() {
+  let startY = 0;
+  let pulling = false;
+  let distance = 0;
+
+  const page = () => document.querySelector('.page:not(.hidden)');
+
+  const reset = () => {
+    el.ptr.style.height = '';
+    el.ptr.dataset.state = '';
+    pulling = false;
+    distance = 0;
+  };
+
+  document.addEventListener('touchstart', (event) => {
+    const target = page();
+    if (!target || el.sheetAdd.classList.contains('hidden') === false) return;
+    if (target.scrollTop > 0 || window.scrollY > 0) return;
+
+    startY = event.touches[0].clientY;
+    pulling = true;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (event) => {
+    if (!pulling || sync.isRunning()) return;
+
+    distance = event.touches[0].clientY - startY;
+
+    if (distance <= 0) {
+      reset();
+      return;
+    }
+
+    // Resistance, so the sheet does not shoot open on a small flick.
+    const shown = Math.min(distance * 0.5, PTR_TRIGGER + 20);
+    el.ptr.style.height = `${shown}px`;
+    el.ptr.dataset.state = shown >= PTR_TRIGGER ? 'ready' : 'pulling';
+    el.ptrText.textContent = shown >= PTR_TRIGGER ? 'Release to sync' : 'Pull to sync';
+  }, { passive: true });
+
+  document.addEventListener('touchend', async () => {
+    if (!pulling) return;
+
+    const triggered = Math.min(distance * 0.5, PTR_TRIGGER + 20) >= PTR_TRIGGER;
+
+    if (!triggered) {
+      reset();
+      return;
+    }
+
+    el.ptr.dataset.state = 'busy';
+    el.ptr.style.height = `${PTR_TRIGGER}px`;
+    el.ptrText.textContent = 'Syncing…';
+
+    try {
+      const report = await sync.syncNow({ includeLookups: true });
+
+      el.ptrText.textContent = report.skipped === 'offline'
+        ? 'Offline — nothing sent'
+        : `Sent ${report.pushed ?? 0}, received ${report.pulled ?? 0}`;
+    } catch (error) {
+      el.ptrText.textContent = error.message;
+    }
+
+    await renderAll();
+    setTimeout(reset, 900);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -1010,6 +1110,8 @@ function cacheElements() {
     arLandUse: $('#ar-land-use'), arExisting: $('#ar-existing'),
     arLandUseLabel: $('#ar-land-use-label'), arLandUseNote: $('#ar-land-use-note'),
     arMap: $('#ar-map'), arMapNote: $('#ar-map-note'),
+    arLocationNote: $('#ar-location-note'),
+    ptr: $('#ptr'), ptrText: $('#ptr-text'),
     arContravention: $('#ar-contravention'), arError: $('#ar-error'),
     arWarn: $('#ar-warn'), arSave: $('#ar-save'),
     arPhotos: $('#ar-photos'), arPhotoList: $('#ar-photo-list'),
@@ -1056,6 +1158,15 @@ function wireEvents() {
 
   el.arLandUse.addEventListener('change', updateContravention);
   el.arExisting.addEventListener('change', updateContravention);
+
+  // Keep the composed location in step with the pickers it is built from.
+  const syncCustomaryLocation = () => {
+    if (state.titleType !== 'customary') return;
+    el.arLocation.value = composeLocation(el.arDistrict.value, el.arLga.value) || '';
+  };
+
+  el.arDistrict.addEventListener('change', syncCustomaryLocation);
+  el.arLga.addEventListener('change', syncCustomaryLocation);
   el.arSave.addEventListener('click', () => saveLandRecord().catch((e) => fatal('Save', e)));
 
   el.arGps.addEventListener('click', () => captureGps().catch((e) => fatal('GPS', e)));
@@ -1136,6 +1247,7 @@ async function enterApp() {
 async function boot() {
   cacheElements();
   wireEvents();
+  wirePullToRefresh();
 
   el.loginBase.value = await api.getBaseUrl();
 

@@ -71,6 +71,52 @@ export function resolveLandUse(row) {
 }
 
 /**
+ * Drop the plot-number prefix from a register address.
+ *
+ * Addresses arrive as "PLOTNO: 1340, LGA: KUMBOTSO, STATE: KANO" or
+ * "Plot 621, MASALLACHI ST, Makoda, …". The plot number is already carried by
+ * the file number, so repeating it here only pushes the part that locates the
+ * parcel — street, district, LGA — off the edge of a phone screen.
+ *
+ * Only stripped when a NUMBER follows, so "PLOT PIECE OF LAND, GAFAN, BUNKURE"
+ * and "PLOT FARM LAND, …" keep their leading word: there the word is part of
+ * the description, not a plot reference.
+ */
+export function cleanLocation(location) {
+  if (!location) return null;
+
+  const cleaned = String(location)
+    .replace(/^\s*PLOT\s*(?:NO\.?)?\s*:?\s*\d+[A-Za-z]?\s*[,\-–]\s*/i, '')
+    .trim()
+    .replace(/^[,\-–\s]+/, '');
+
+  return cleaned === '' ? null : cleaned;
+}
+
+/**
+ * Compose a location from the parts a surveyor picks.
+ *
+ * A customary title has no register address, so district and LGA are all there
+ * is to place it. Deduplicated because the district name sometimes already
+ * carries the LGA.
+ */
+export function composeLocation(district, lga) {
+  const parts = [district, lga]
+    .map((p) => (p ? String(p).trim() : ''))
+    .filter(Boolean);
+
+  const seen = new Set();
+  const unique = parts.filter((p) => {
+    const key = p.toUpperCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return unique.length ? unique.join(', ') : null;
+}
+
+/**
  * Best available name for a file.
  *
  * The index carries the holder under different columns depending on where the
