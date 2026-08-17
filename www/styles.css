@@ -50,13 +50,14 @@ html, body {
 .brand h1 { margin: 0; font-size: 22px; }
 .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 
+/* The launcher icon, reused as the in-app mark so the app, the tile on the
+   home screen and the store listing all read as one thing. */
 .brand__mark {
   width: 52px; height: 52px; flex: none;
-  display: grid; place-items: center;
-  background: var(--brand); color: #10131a;
-  border-radius: 14px; font-weight: 800; font-size: 13px; letter-spacing: .5px;
+  border-radius: 14px; object-fit: cover;
+  box-shadow: 0 4px 12px var(--brand-glow);
 }
-.brand__mark--sm { width: 34px; height: 34px; border-radius: 10px; font-size: 10px; }
+.brand__mark--sm { width: 34px; height: 34px; border-radius: 10px; box-shadow: none; }
 
 .field { display: block; }
 .field > span {
@@ -290,6 +291,29 @@ textarea { resize: vertical; }
 .row { display: flex; gap: 8px; }
 .row input { flex: 1; }
 
+/* Read-only because the register owns the value, not because it is broken.
+   Muted rather than greyed to illegibility — the surveyor still needs to read
+   it on a bright screen outdoors. */
+.is-locked,
+input:disabled, select:disabled, textarea:disabled {
+  background: var(--surface-2);
+  color: var(--muted);
+  opacity: 1;                     /* Android's default makes this unreadable */
+  -webkit-text-fill-color: var(--muted);
+  cursor: not-allowed;
+}
+.toggle__btn.is-locked { opacity: .4; }
+
+.map {
+  height: 190px; width: 100%;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; background: var(--surface);
+}
+/* Leaflet paints its own controls light; keep them legible on the dark sheet. */
+.map .leaflet-control-zoom a {
+  background: var(--surface); color: var(--text); border-color: var(--line);
+}
+
 /* Inline field-inspection divider inside the record sheet. */
 .section { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 2px; }
 .section h3 { margin: 0; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--brand); }
@@ -327,6 +351,87 @@ textarea { resize: vertical; }
   font-size: 12.5px; font-weight: 700;
 }
 .badge--danger { background: rgba(248,113,113,.14); color: var(--danger); border: 1px solid rgba(248,113,113,.32); }
+
+/* ---------- first-run setup ---------- */
+
+.boot {
+  position: fixed; inset: 0; z-index: 70;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+
+.boot__panel { width: 100%; max-width: 420px; }
+
+.boot__logo {
+  width: 64px; height: 64px; border-radius: 16px; object-fit: cover;
+  box-shadow: 0 6px 20px var(--brand-glow);
+  margin-bottom: 18px;
+  animation: boot-pulse 2.4s ease-in-out infinite;
+}
+@keyframes boot-pulse {
+  0%, 100% { transform: scale(1);    box-shadow: 0 6px 20px var(--brand-glow); }
+  50%      { transform: scale(1.05); box-shadow: 0 10px 30px var(--brand-glow); }
+}
+
+.boot h2 { margin: 0 0 4px; font-size: 20px; }
+.boot__sub { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
+
+.boot__steps { list-style: none; margin: 0 0 20px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.boot__step {
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 2px; font-size: 13.5px;
+  color: var(--dim);
+  transition: color .25s;
+}
+.boot__step[data-state="active"] { color: var(--text); }
+.boot__step[data-state="done"]   { color: var(--muted); }
+.boot__step[data-state="failed"] { color: var(--danger); }
+
+.boot__icon {
+  width: 18px; height: 18px; flex: none; border-radius: 50%;
+  border: 2px solid currentColor; opacity: .35;
+  position: relative;
+}
+.boot__step[data-state="active"] .boot__icon {
+  opacity: 1;
+  border-color: var(--brand);
+  border-top-color: transparent;
+  animation: boot-spin .7s linear infinite;
+}
+@keyframes boot-spin { to { transform: rotate(360deg); } }
+
+/* Tick and cross drawn in CSS — no icon font, nothing to download. */
+.boot__step[data-state="done"] .boot__icon {
+  opacity: 1; border-color: var(--ok); background: var(--ok);
+}
+.boot__step[data-state="done"] .boot__icon::after {
+  content: ''; position: absolute; left: 4px; top: 1px;
+  width: 4px; height: 8px;
+  border: solid var(--bg); border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.boot__step[data-state="failed"] .boot__icon {
+  opacity: 1; border-color: var(--danger);
+}
+.boot__step[data-state="failed"] .boot__icon::after {
+  content: '!'; position: absolute; inset: 0;
+  display: grid; place-items: center;
+  font-size: 11px; font-weight: 800; color: var(--danger);
+}
+
+.boot__label { flex: 1; }
+.boot__detail { font-size: 11.5px; color: var(--dim); text-align: right; }
+
+.boot__bar { height: 4px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+.boot__bar-fill {
+  height: 100%; width: 0;
+  background: var(--brand);
+  transition: width .45s cubic-bezier(.4, 0, .2, 1);
+}
+
+.boot .btn { margin-top: 18px; }
 
 /* ---------- toast ---------- */
 

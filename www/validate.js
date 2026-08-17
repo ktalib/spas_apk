@@ -68,9 +68,12 @@ export function validateFieldData(data) {
     errors.inspection_date = 'Inspection date is required.';
   }
 
-  if (!req(data.findings)) {
-    errors.findings = 'Findings are required.';
-  }
+  // Findings are NOT required.
+  //
+  // The server rule demands them, so saveLandRecord() substitutes a default
+  // when the surveyor leaves the box empty. Requiring free text here only
+  // blocked a save that was otherwise complete — coordinates, date and photos
+  // all captured — which is the wrong trade on site.
 
   // Coordinates are OPTIONAL by product decision (Q5): a surveyor may have no
   // GPS fix, and losing the record entirely is worse than losing the pin. The

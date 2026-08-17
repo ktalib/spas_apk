@@ -133,19 +133,26 @@ export async function cacheFileIndex(entries) {
       values: [row.file_number]
     });
 
+    // Blank strings are stored as NULL. The API sends '' for anything it could
+    // not resolve, and '' defeats every COALESCE fallback downstream.
+    const blankToNull = (value) => {
+      const text = value === undefined || value === null ? '' : String(value).trim();
+      return text === '' || text === '-' ? null : text;
+    };
+
     set.push({
       statement: `INSERT INTO file_index_cache
         (file_number, file_title, owner_name, land_use_type, location, district, lga, phone, tracking_id, file_indexing_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       values: [
         row.file_number,
-        row.file_title ?? null,
-        row.owner_name ?? null,
-        row.land_use_type ?? null,
-        row.location ?? null,
-        row.district ?? null,
-        row.lga ?? null,
-        row.phone ?? null,
+        blankToNull(row.file_title),
+        blankToNull(row.owner_name),
+        blankToNull(row.land_use_type),
+        blankToNull(row.location),
+        blankToNull(row.district),
+        blankToNull(row.lga),
+        blankToNull(row.phone),
         row.tracking_id ?? null,
         row.file_indexing_id ?? null
       ]
@@ -191,12 +198,18 @@ export async function listIndexedFiles({ search = '', limit = 300 } = {}) {
 
   const params = search ? [like, like, like, like, limit] : [limit];
 
+  // NULLIF on every fallback. The lookup API returns owner_name as an EMPTY
+  // STRING when it cannot parse a holder out of `current_holder` — which is
+  // every row in practice — and COALESCE treats '' as a real value, so it never
+  // fell through to file_title. The result was "Owner —" on cards whose name
+  // was sitting right there in file_title.
   const indexed = rows(await db.query(
     `SELECT
         c.file_number,
-        COALESCE(a.owner_name, c.owner_name, c.file_title) AS owner_name,
-        COALESCE(a.location, c.location)                   AS location,
-        COALESCE(a.land_use_type, c.land_use_type)         AS land_use_type,
+        COALESCE(NULLIF(TRIM(a.owner_name), ''), NULLIF(TRIM(c.owner_name), ''), NULLIF(TRIM(c.file_title), '')) AS owner_name,
+        COALESCE(NULLIF(TRIM(a.location), ''), NULLIF(TRIM(c.location), ''))                                     AS location,
+        COALESCE(NULLIF(TRIM(a.land_use_type), ''), NULLIF(TRIM(c.land_use_type), ''))                           AS land_use_type,
+        c.file_title,
         c.district, c.lga, c.tracking_id, c.file_indexing_id,
         a.client_uuid, a.status, a.sync_status,
         a.proposed_use, a.existing_use

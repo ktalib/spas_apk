@@ -187,36 +187,59 @@ const SEED_FILE_INDEX = 250;
  * cost the others. The LGA and district lists are tiny and are what the
  * customary form cannot work without, so they matter more than the file index.
  */
-export async function refreshLookups({ lga = null } = {}) {
+/**
+ * @param {object}   options
+ * @param {?string}  options.lga
+ * @param {?function} options.onStep  (key, state, detail) — drives the setup UI.
+ *                                    state is 'active' | 'done' | 'failed'.
+ */
+export async function refreshLookups({ lga = null, onStep = null } = {}) {
   const failures = [];
 
-  const step = async (label, run) => {
-    try {
-      await run();
-    } catch (error) {
-      failures.push(`${label}: ${error.message}`);
+  const report = (key, state, detail) => {
+    if (onStep) {
+      try {
+        onStep(key, state, detail);
+      } catch {
+        /* a broken progress listener must never fail the sync */
+      }
     }
   };
 
-  await step('land uses', async () => {
+  const step = async (key, label, run) => {
+    report(key, 'active');
+
+    try {
+      const detail = await run();
+      report(key, 'done', detail);
+    } catch (error) {
+      failures.push(`${label}: ${error.message}`);
+      report(key, 'failed', error.message);
+    }
+  };
+
+  await step('landuses', 'land uses', async () => {
     const landUses = await api.fetchLandUses();
     await store.seedLandUses(landUses.data, landUses.customary);
+    return `${(landUses.data || []).length} types`;
   });
 
-  await step('LGAs', async () => {
+  await step('lgas', 'LGAs', async () => {
     const lgas = await api.fetchLgas();
     await store.seedNameCache('lga_cache', lgas.data);
+    return `${(lgas.data || []).length} areas`;
   });
 
-  await step('districts', async () => {
+  await step('districts', 'districts', async () => {
     const districts = await api.fetchDistricts();
     await store.seedNameCache('district_cache', districts.data);
+    return `${(districts.data || []).length} districts`;
   });
 
   // The Records tab lists indexed files, so without this the main screen is
   // empty on first run. With an LGA the server also resolves that LGA's
   // spelling variants, which is worth thousands of files (see LgaNormalizer).
-  await step('file index', async () => {
+  await step('fileindex', 'file index', async () => {
     const index = await api.fetchFileIndex(
       lga ? { lga, limit: SEED_FILE_INDEX } : { limit: SEED_FILE_INDEX }
     );
@@ -226,6 +249,8 @@ export async function refreshLookups({ lga = null } = {}) {
     if (lga) {
       await store.setMeta('file_index.lga', lga);
     }
+
+    return `${(index.data || []).length} files`;
   });
 
   await store.setMeta('last_pull.lookups', new Date().toISOString());

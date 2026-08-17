@@ -13,7 +13,7 @@
     <section id="screen-login" class="screen">
       <div class="login">
         <div class="brand">
-          <div class="brand__mark">SPAS</div>
+          <img class="brand__mark" src="./logo.png" alt="" />
           <div>
             <h1>SPAS Mobile</h1>
             <p>Special Assignment &middot; Field Survey</p>
@@ -54,7 +54,7 @@
 
       <header class="topbar">
         <div class="topbar__brand">
-          <div class="brand__mark brand__mark--sm">SPAS</div>
+          <img class="brand__mark brand__mark--sm" src="./logo.png" alt="" />
           <div>
             <strong>SPAS Mobile</strong>
             <small id="who">Special Assignment</small>
@@ -169,15 +169,20 @@
             <input id="ar-location" type="text" />
           </label>
 
+          <!--
+            One land-use field, not two.
+            "Approved land use" was a second control holding the same answer as
+            this one, so it is gone: the approved use IS the file's land use for
+            a statutory title, and the observed-around use for a customary one.
+            The label switches with the title type, and for statutory the value
+            comes from the record and is read-only — it is not the surveyor's to
+            change on site.
+          -->
           <label class="field">
-            <span>General landuse (observed around)</span>
+            <span id="ar-land-use-label">Land use</span>
             <select id="ar-land-use"></select>
           </label>
-
-          <label class="field">
-            <span>Approved land use <i>*</i></span>
-            <select id="ar-proposed"></select>
-          </label>
+          <p id="ar-land-use-note" class="hint"></p>
 
           <label class="field">
             <span>Prevailing land use <i>*</i></span>
@@ -217,6 +222,14 @@
           </label>
           <p id="ar-coord-note" class="hint"></p>
 
+          <!--
+            Pin location. Satellite tiles need a connection, so offline this is
+            replaced by a plain notice and GPS remains the way to place a plot —
+            the surveyor is standing on it, which beats any map anyway.
+          -->
+          <div id="ar-map" class="map"></div>
+          <p id="ar-map-note" class="hint"></p>
+
           <label class="field">
             <span>Findings</span>
             <textarea id="ar-findings" rows="3" placeholder="Describe findings on ground..."></textarea>
@@ -229,6 +242,29 @@
         <div class="sheet__foot">
           <button id="ar-save" class="btn btn--primary btn--lg">Save record</button>
         </div>
+      </div>
+    </div>
+
+    <!-- ================= FIRST-RUN SETUP ================= -->
+    <!--
+      Shown once, after the first sign-in, while the device builds its offline
+      store. It is a real progress report, not decoration: this is the only
+      moment the app needs a connection, and a surveyor who walks away mid-setup
+      ends up in the field with an empty file index. Naming each step makes the
+      wait legible and makes a failure obvious rather than silent.
+    -->
+    <div id="boot" class="boot hidden">
+      <div class="boot__panel">
+        <img class="boot__logo" src="./logo.png" alt="" />
+        <h2>Preparing offline mode</h2>
+        <p class="boot__sub">Setting this device up to work without a connection.</p>
+
+        <ul id="boot-steps" class="boot__steps"></ul>
+
+        <div class="boot__bar"><div id="boot-bar-fill" class="boot__bar-fill"></div></div>
+
+        <p id="boot-note" class="hint"></p>
+        <button id="boot-continue" class="btn btn--lg hidden">Continue</button>
       </div>
     </div>
 

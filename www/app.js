@@ -16,6 +16,7 @@ import {
   parseCoordinates, hasErrors, firstError
 } from './validate.js';
 import { resolveLandUse, resolveOwner } from './landuse.js';
+import { mountPinMap } from './map.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = {};
@@ -97,8 +98,12 @@ async function doLogin() {
     // authenticated. Getting in matters more than having every lookup cached.
     await enterApp();
 
-    toast('Signed in. Downloading reference data...', 'success');
-    primeReferenceData();
+    // Setup runs on top of the app, so a failure leaves a usable app behind it
+    // rather than a dead end.
+    runFirstRunSetup().catch((e) => {
+      el.boot.classList.add('hidden');
+      fatal('Setup', e);
+    });
   } catch (error) {
     let message = error.message;
 
@@ -145,23 +150,97 @@ async function handleAuthExpired() {
   show('login');
 }
 
+// ---------------------------------------------------------------------------
+// First-run setup
+// ---------------------------------------------------------------------------
+
+const BOOT_STEPS = [
+  ['system',    'Checking system'],
+  ['database',  'Preparing encrypted database'],
+  ['landuses',  'Land use types'],
+  ['lgas',      'Local government areas'],
+  ['districts', 'Districts'],
+  ['fileindex', 'Indexed land files'],
+  ['records',   'Records and inspections']
+];
+
+function bootRender() {
+  el.bootSteps.innerHTML = BOOT_STEPS.map(([key, label]) => `
+    <li class="boot__step" data-step="${key}" data-state="waiting">
+      <span class="boot__icon"></span>
+      <span class="boot__label">${label}</span>
+      <span class="boot__detail"></span>
+    </li>`).join('');
+}
+
+function bootStep(key, state, detail = '') {
+  const row = el.bootSteps.querySelector(`[data-step="${key}"]`);
+  if (!row) return;
+
+  row.dataset.state = state;
+  row.querySelector('.boot__detail').textContent = detail;
+
+  const done = el.bootSteps.querySelectorAll('[data-state="done"],[data-state="failed"]').length;
+  el.bootBar.style.width = `${Math.round((done / BOOT_STEPS.length) * 100)}%`;
+}
+
 /**
- * Download reference data in the background, after the surveyor is already in.
+ * Build the offline store, showing what is happening.
  *
- * Deliberately not awaited by the caller and never fatal: a failure here costs
- * cached lookups, which "Sync now" can retry, not access to the app.
+ * This is the only moment the app genuinely needs a connection, and a surveyor
+ * who walks off mid-setup reaches the field with an empty file index. Naming
+ * each step makes the wait legible and a failure visible — the alternative is a
+ * blank screen followed by a mysteriously empty Records tab.
+ *
+ * Never blocks entry: the "Continue" button appears whatever happens, and every
+ * step is retryable later with "Sync now".
  */
-function primeReferenceData() {
-  sync.refreshLookups({})
-    .then(() => sync.syncNow({}))
-    .then(() => renderAll())
-    .then(() => toast('Reference data ready.', 'success'))
-    .catch((error) => {
-      toast(
-        `Signed in, but reference data did not download: ${error.message} — tap "Sync now" when you have a better connection.`,
-        'warn'
-      );
-    });
+async function runFirstRunSetup() {
+  el.boot.classList.remove('hidden');
+  el.bootContinue.classList.add('hidden');
+  el.bootNote.textContent = '';
+  bootRender();
+
+  bootStep('system', 'active');
+  bootStep('system', 'done', isNative() ? getPlatform() : 'browser preview');
+
+  bootStep('database', 'active');
+
+  try {
+    const db = await ensureDatabase();
+    const tables = await db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    );
+    bootStep('database', 'done', `${(tables.values || []).length} tables, encrypted`);
+  } catch (error) {
+    bootStep('database', 'failed', error.message);
+  }
+
+  let lookupError = null;
+
+  try {
+    await sync.refreshLookups({ onStep: bootStep });
+  } catch (error) {
+    lookupError = error;
+  }
+
+  bootStep('records', 'active');
+
+  try {
+    const report = await sync.syncNow({});
+    bootStep('records', 'done', `${report.pulled ?? 0} received`);
+  } catch (error) {
+    bootStep('records', 'failed', error.message);
+  }
+
+  el.bootNote.textContent = lookupError
+    ? 'Some data did not download. You can work offline now and tap “Sync now” when the connection is better.'
+    : 'This device is ready to work offline.';
+
+  el.bootContinue.classList.remove('hidden');
+  el.bootContinue.textContent = lookupError ? 'Continue anyway' : 'Start';
+
+  await renderAll();
 }
 
 async function doLogout() {
@@ -428,17 +507,11 @@ async function openForIndexedFile(fileNumber) {
   }
 }
 
-async function openAddRecord({ title = 'Add Land Record' } = {}) {
+async function openAddRecord({ title = 'Log Inspection' } = {}) {
   el.arTitle.textContent = title;
 
   state.titleType = 'statutory';
   state.selectedFile = null;
-
-  document.querySelectorAll('[data-title-type]').forEach((b) =>
-    b.classList.toggle('is-active', b.dataset.titleType === 'statutory'));
-
-  el.grpStatutory.classList.remove('hidden');
-  el.grpCustomary.classList.add('hidden');
 
   ['arFileSearch', 'arOwner', 'arPhone', 'arLocation', 'arCoords', 'arFindings'].forEach((k) => {
     el[k].value = '';
@@ -462,8 +535,6 @@ async function openAddRecord({ title = 'Add Land Record' } = {}) {
     store.listNames('district_cache'), store.countFileIndex()
   ]);
 
-  fillSelect(el.arLandUse, uses);
-  fillSelect(el.arProposed, uses);
   fillSelect(el.arExisting, uses);
   fillSelect(el.arLga, lgas);
   fillSelect(el.arDistrict, districts, { placeholder: '— optional —' });
@@ -472,7 +543,36 @@ async function openAddRecord({ title = 'Add Land Record' } = {}) {
     ? `${cached} file(s) cached on this device.`
     : 'No files cached yet — sync while online to search offline.';
 
+  await applyFieldRules();
+
   el.sheetAdd.classList.remove('hidden');
+  mountInspectionMap(null);
+}
+
+/**
+ * Bring up the pin map, or explain why there isn't one.
+ *
+ * Never throws into the caller: the map is a convenience, and GPS remains the
+ * way to place a plot when it cannot load.
+ */
+function mountInspectionMap(initial) {
+  el.arMapNote.textContent = 'Loading map…';
+
+  mountPinMap(el.arMap, initial, (coords) => {
+    el.arCoords.value = `${coords.lat.toFixed(6)}, ${coords.lng.toFixed(6)}`;
+    el.arMapNote.textContent = 'Pin set from the map.';
+    el.arWarn.classList.add('hidden');
+  })
+    .then((handle) => {
+      state.map = handle;
+      el.arMap.classList.remove('hidden');
+      el.arMapNote.textContent = 'Tap the map to drop a pin, or use GPS.';
+    })
+    .catch(() => {
+      state.map = null;
+      el.arMap.classList.add('hidden');
+      el.arMapNote.textContent = 'Map needs a connection. Use GPS to place this plot — it works offline.';
+    });
 }
 
 /**
@@ -480,18 +580,69 @@ async function openAddRecord({ title = 'Add Land Record' } = {}) {
  * pre-fills a value immediately after would have it wiped when the rebuild
  * lands. Callers that set a value must await this first.
  */
-async function setTitleType(type) {
-  state.titleType = type;
+/** Disable a control and mark it visually read-only. */
+function lock(input, locked) {
+  input.disabled = locked;
+  input.classList.toggle('is-locked', locked);
+}
 
-  document.querySelectorAll('[data-title-type]').forEach((b) =>
-    b.classList.toggle('is-active', b.dataset.titleType === type));
+/**
+ * Apply the field rules for the current title type and entry mode.
+ *
+ * Two independent axes:
+ *
+ *   title type — a statutory file carries its land use in the register, and
+ *     that is not the surveyor's to change on site, so it shows read-only and
+ *     is labelled "Land use". A customary title has no register entry, so the
+ *     surveyor records what they observe around the plot and it is editable.
+ *
+ *   entry mode — opened from a file in the list, identity is already known:
+ *     file number and owner are filled and locked so they cannot drift from the
+ *     register. Started fresh, they are the surveyor's to enter.
+ */
+async function applyFieldRules() {
+  const customary = state.titleType === 'customary';
+  const fromIndex = !!state.selectedFile;
 
-  el.grpStatutory.classList.toggle('hidden', type !== 'statutory');
-  el.grpCustomary.classList.toggle('hidden', type !== 'customary');
+  document.querySelectorAll('[data-title-type]').forEach((b) => {
+    b.classList.toggle('is-active', b.dataset.titleType === state.titleType);
 
-  // Customary land is only held for three uses — Industrial is excluded.
-  const uses = await store.listLandUses({ customaryOnly: type === 'customary' });
+    // A file picked from the register is statutory by definition — offering
+    // "Customary" there invites a contradiction with the register.
+    const disableCustomary = fromIndex && b.dataset.titleType === 'customary';
+    b.disabled = disableCustomary;
+    b.classList.toggle('is-locked', disableCustomary);
+  });
+
+  el.grpStatutory.classList.toggle('hidden', customary);
+  el.grpCustomary.classList.toggle('hidden', !customary);
+
+  lock(el.arFileSearch, fromIndex);
+  lock(el.arOwner, fromIndex);
+
+  el.arLandUseLabel.textContent = customary
+    ? 'General landuse (observed around)'
+    : 'Land use';
+
+  lock(el.arLandUse, !customary);
+
+  el.arLandUseNote.textContent = customary
+    ? 'What you observe around the plot.'
+    : 'From the file register — not editable on site.';
+
+  // Customary land is only held for three uses; Industrial is excluded.
+  const current = el.arLandUse.value;
+  const uses = await store.listLandUses({ customaryOnly: customary });
   fillSelect(el.arLandUse, uses);
+  if (current) selectByLabel(el.arLandUse, current);
+}
+
+async function setTitleType(type) {
+  // A locked toggle must not respond to a tap.
+  if (state.selectedFile && type === 'customary') return;
+
+  state.titleType = type;
+  await applyFieldRules();
 }
 
 async function searchFiles() {
@@ -532,20 +683,39 @@ async function pickFile(fileNumber) {
   if (!row) return;
 
   state.selectedFile = row;
-
-  el.arFileSearch.value = row.file_number;
-  el.arOwner.value = row.file_title || row.owner_name || '';
-  el.arPhone.value = row.phone || '';
-  el.arLocation.value = row.location || '';
-  if (row.land_use_type) el.arLandUse.value = row.land_use_type;
+  state.titleType = 'statutory';
 
   el.arFileResults.classList.add('hidden');
+
+  // Rebuild first: it repopulates the land-use list and locks the identity
+  // fields. Filling values before this would have them wiped.
+  await applyFieldRules();
+
+  el.arFileSearch.value = row.file_number;
+  el.arOwner.value = resolveOwner(row) || '';
+  el.arPhone.value = row.phone || '';
+  el.arLocation.value = row.location || '';
+
+  // Falls back to the file-number prefix when the register has no land use.
+  const use = resolveLandUse(row);
+  if (use) selectByLabel(el.arLandUse, use);
+
+  updateContravention();
 }
 
+/**
+ * The land use IS the approved use. There is no separate "approved" control any
+ * more — it held the same answer twice — so a contravention is the file's land
+ * use differing from what the surveyor sees prevailing on the ground.
+ */
 function updateContravention() {
-  const a = el.arProposed.value.toUpperCase().trim();
-  const b = el.arExisting.value.toUpperCase().trim();
-  el.arContravention.classList.toggle('hidden', !(a && b && a !== b));
+  const approved = el.arLandUse.value.toUpperCase().trim();
+  const prevailing = el.arExisting.value.toUpperCase().trim();
+
+  el.arContravention.classList.toggle(
+    'hidden',
+    !(approved && prevailing && approved !== prevailing)
+  );
 }
 
 /**
@@ -586,7 +756,10 @@ async function saveLandRecord() {
     lga: state.titleType === 'customary' ? el.arLga.value : (state.selectedFile?.lga ?? null),
     district: state.titleType === 'customary' ? el.arDistrict.value : (state.selectedFile?.district ?? null),
     land_use_type: el.arLandUse.value,
-    proposed_use: el.arProposed.value,
+    // The approved use IS the land use. There was a separate "Approved land
+    // use" control holding the same answer, which meant two places to get it
+    // wrong; the server still wants both fields, so one value feeds both.
+    proposed_use: el.arLandUse.value,
     existing_use: el.arExisting.value
   };
 
@@ -701,6 +874,10 @@ async function captureGps() {
     el.arCoords.value = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
     el.arCoordNote.textContent = `Accurate to about ${Math.round(accuracy)} m.`;
     el.arWarn.classList.add('hidden');
+
+    // Move the pin so the surveyor can see where the fix actually landed — a
+    // bad fix on the wrong side of a boundary is otherwise invisible.
+    state.map?.setPin({ lat: latitude, lng: longitude });
   } catch (error) {
     el.arCoordNote.textContent = `GPS failed: ${error.message} You can type coordinates, or save without a pin.`;
   } finally {
@@ -810,6 +987,8 @@ async function renderMapCanvas(points) {
 function cacheElements() {
   Object.assign(el, {
     login: $('#screen-login'), app: $('#screen-app'), toast: $('#toast'),
+    boot: $('#boot'), bootSteps: $('#boot-steps'), bootBar: $('#boot-bar-fill'),
+    bootNote: $('#boot-note'), bootContinue: $('#boot-continue'),
     loginId: $('#login-identifier'), loginPw: $('#login-password'),
     loginBase: $('#login-base'), btnLogin: $('#btn-login'), loginError: $('#login-error'),
     who: $('#who'), btnLogout: $('#btn-logout'),
@@ -828,7 +1007,9 @@ function cacheElements() {
     arFileSearch: $('#ar-file-search'), arFileResults: $('#ar-file-results'),
     arFileHint: $('#ar-file-hint'), arOwner: $('#ar-owner'), arPhone: $('#ar-phone'),
     arLga: $('#ar-lga'), arDistrict: $('#ar-district'), arLocation: $('#ar-location'),
-    arLandUse: $('#ar-land-use'), arProposed: $('#ar-proposed'), arExisting: $('#ar-existing'),
+    arLandUse: $('#ar-land-use'), arExisting: $('#ar-existing'),
+    arLandUseLabel: $('#ar-land-use-label'), arLandUseNote: $('#ar-land-use-note'),
+    arMap: $('#ar-map'), arMapNote: $('#ar-map-note'),
     arContravention: $('#ar-contravention'), arError: $('#ar-error'),
     arWarn: $('#ar-warn'), arSave: $('#ar-save'),
     arPhotos: $('#ar-photos'), arPhotoList: $('#ar-photo-list'),
@@ -839,6 +1020,7 @@ function cacheElements() {
 
 function wireEvents() {
   el.btnLogin.addEventListener('click', () => doLogin().catch((e) => fatal('Login', e)));
+  el.bootContinue.addEventListener('click', () => el.boot.classList.add('hidden'));
   el.btnLogout.addEventListener('click', () => doLogout().catch((e) => fatal('Logout', e)));
 
   document.querySelectorAll('.tab').forEach((tab) => {
@@ -872,7 +1054,7 @@ function wireEvents() {
     if (button) pickFile(button.dataset.file).catch((err) => fatal('Pick file', err));
   });
 
-  el.arProposed.addEventListener('change', updateContravention);
+  el.arLandUse.addEventListener('change', updateContravention);
   el.arExisting.addEventListener('change', updateContravention);
   el.arSave.addEventListener('click', () => saveLandRecord().catch((e) => fatal('Save', e)));
 
@@ -991,3 +1173,4 @@ if (document.readyState === 'loading') {
 } else {
   boot().catch((e) => fatal('Boot', e));
 }
+
